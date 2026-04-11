@@ -1,36 +1,47 @@
+'use client';
+
 import React from 'react';
 import { DiningResult } from '@/lib/types';
-import { Card, Badge } from '@/components/ui'; // Assuming ShadCN components are in the ui folder
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 interface DiningCardProps {
   data: DiningResult;
 }
 
 const DiningCard: React.FC<DiningCardProps> = ({ data }) => {
+  const { options } = data;
+
   return (
     <Card>
-      <h2 className="text-lg font-semibold">Dining Options</h2>
-      <ul className="space-y-4">
-        {data.options.map((option, index) => (
-          <li key={index} className="flex justify-between items-center">
+      <CardHeader>
+        <CardTitle>Dining Options</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {options.map((option, index) => (
+          <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
             <div>
-              <h3 className="text-md font-medium">{option.name}</h3>
-              <div className="flex items-center space-x-2">
-                <span className={`text-sm ${option.budget_ok ? 'text-green-500' : 'text-red-500'}`}>
-                  {option.budget_ok ? '✔️ Budget OK' : '❌ Budget Exceeded'}
-                </span>
-                <span className={`text-sm ${option.hours_open ? 'text-green-500' : 'text-red-500'}`}>
-                  {option.hours_open ? '🕒 Open' : '🚫 Closed'}
-                </span>
+              <p className="font-semibold">{option.name}</p>
+              <p className="text-sm text-gray-600">{option.distance_min} min walk</p>
+              <div className="flex gap-1 mt-1">
                 {option.dietary_tags.map((tag, tagIndex) => (
-                  <Badge key={tagIndex} className="text-xs">{tag}</Badge>
+                  <Badge key={tagIndex} variant="secondary" className="text-xs">
+                    {tag}
+                  </Badge>
                 ))}
               </div>
-              <span className="text-sm text-gray-500">{option.distance_min} min walk</span>
             </div>
-          </li>
+            <div className="text-right">
+              <Badge variant={option.budget_ok ? 'default' : 'destructive'}>
+                {option.budget_ok ? 'Budget OK' : 'Over Budget'}
+              </Badge>
+              <p className="text-xs text-gray-500 mt-1">
+                {option.hours_open ? 'Open' : 'Closed'}
+              </p>
+            </div>
+          </div>
         ))}
-      </ul>
+      </CardContent>
     </Card>
   );
 };

@@ -1,6 +1,9 @@
+'use client';
+
 import React from 'react';
 import { PieChart, Pie, Cell, Tooltip } from 'recharts';
 import { FinanceResult } from '@/lib/types';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 interface FinanceCardProps {
   data: FinanceResult;
@@ -17,27 +20,31 @@ const FinanceCard: React.FC<FinanceCardProps> = ({ data }) => {
   const COLORS = ['#0088FE', '#00C49F'];
 
   return (
-    <div className="p-4 bg-white rounded-lg shadow-md">
-      <h2 className="text-lg font-semibold">Finance Overview</h2>
-      <PieChart width={400} height={200}>
-        <Pie
-          data={chartData}
-          cx={200}
-          cy={100}
-          innerRadius={40}
-          outerRadius={80}
-          fill="#8884d8"
-          paddingAngle={5}
-          dataKey="value"
-        >
-          {chartData.map((entry, index) => (
-            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip />
-      </PieChart>
-      <p className="mt-4 italic">"{suggestion}"</p>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Finance Overview</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <PieChart width={400} height={200}>
+          <Pie
+            data={chartData}
+            cx={200}
+            cy={100}
+            innerRadius={40}
+            outerRadius={80}
+            fill="#8884d8"
+            paddingAngle={5}
+            dataKey="value"
+          >
+            {chartData.map((entry, index) => (
+              <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip />
+        </PieChart>
+        <p className="mt-4 italic">"{suggestion}"</p>
+      </CardContent>
+    </Card>
   );
 };
 

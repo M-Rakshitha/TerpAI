@@ -1,29 +1,39 @@
+'use client';
+
 import React from 'react';
-import { GoogleMap, Marker } from '@react-google-maps/api';
-import { Card } from '@/components/ui/Card';
 import { NavigatorResult } from '@/lib/types';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 
 interface NavigatorCardProps {
   data: NavigatorResult;
 }
 
 const NavigatorCard: React.FC<NavigatorCardProps> = ({ data }) => {
+  const { origin, destination, walk_minutes, steps, map_url } = data;
+
   return (
     <Card>
-      <h2 className="text-lg font-semibold">Navigation Details</h2>
-      <p className="text-xl">{data.walk_minutes} min walk</p>
-      <GoogleMap
-        mapContainerStyle={{ height: '400px', width: '100%' }}
-        center={{ lat: 0, lng: 0 }} // Replace with actual coordinates
-        zoom={15}
-      >
-        <Marker position={{ lat: 0, lng: 0 }} /> {/* Replace with actual coordinates */}
-      </GoogleMap>
-      <ol className="mt-4">
-        {data.steps.map((step, index) => (
-          <li key={index}>{step}</li>
-        ))}
-      </ol>
+      <CardHeader>
+        <CardTitle>Navigation</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-600">From: {origin}</p>
+            <p className="text-sm text-gray-600">To: {destination}</p>
+          </div>
+          <p className="font-semibold">{walk_minutes} min walk</p>
+        </div>
+        <div className="space-y-1">
+          {steps.map((step, index) => (
+            <p key={index} className="text-sm">{index + 1}. {step}</p>
+          ))}
+        </div>
+        <Button className="w-full" onClick={() => window.open(map_url, '_blank')}>
+          Open in Maps
+        </Button>
+      </CardContent>
     </Card>
   );
 };

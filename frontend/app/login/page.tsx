@@ -1,5 +1,5 @@
 import { NextPage } from 'next';
-import { useUser } from '@auth0/nextjs-auth0/client';
+import { useUser } from '@auth0/nextjs-auth0';
 import Link from 'next/link';
 
 const LoginPage: NextPage = () => {

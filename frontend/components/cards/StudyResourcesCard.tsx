@@ -1,41 +1,52 @@
+'use client';
+
 import React from 'react';
-import { QueryResponse } from '@/lib/types';
-import { Card } from '@/components/ui/Card';
+import { StudyResourcesResult } from '@/lib/types';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface StudyResourcesCardProps {
-  data: QueryResponse['results']['study_resources'];
+  data: StudyResourcesResult;
 }
 
 const StudyResourcesCard: React.FC<StudyResourcesCardProps> = ({ data }) => {
-  if (!data) return null;
+  const { tutoring, office_hours } = data;
 
   return (
     <Card>
-      <h2 className="text-lg font-semibold">Tutoring</h2>
-      {data.tutoring.length > 0 ? (
-        <ul>
-          {data.tutoring.map((tutor, index) => (
-            <li key={index} className="py-2">
-              <strong>{tutor.service}</strong> - {tutor.subject} ({tutor.schedule}) at {tutor.location}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p>No tutoring resources available.</p>
-      )}
+      <CardHeader>
+        <CardTitle>Study Resources</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Tabs defaultValue="tutoring" className="w-full">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="tutoring">Tutoring</TabsTrigger>
+            <TabsTrigger value="office-hours">Office Hours</TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="tutoring" className="space-y-2">
+            {tutoring.map((item, index) => (
+              <div key={index} className="p-3 border rounded-lg">
+                <p className="font-semibold">{item.service}</p>
+                <p className="text-sm text-gray-600">{item.subject}</p>
+                <p className="text-sm text-gray-500">{item.schedule}</p>
+                <p className="text-xs text-gray-400">{item.location}</p>
+              </div>
+            ))}
+          </TabsContent>
 
-      <h2 className="text-lg font-semibold mt-4">Office Hours</h2>
-      {data.office_hours.length > 0 ? (
-        <ul>
-          {data.office_hours.map((officeHour, index) => (
-            <li key={index} className="py-2">
-              <strong>{officeHour.professor}</strong> - {officeHour.course} ({officeHour.time}) in {officeHour.room}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p>No office hours available.</p>
-      )}
+          <TabsContent value="office-hours" className="space-y-2">
+            {office_hours.map((item, index) => (
+              <div key={index} className="p-3 border rounded-lg">
+                <p className="font-semibold">{item.professor}</p>
+                <p className="text-sm text-gray-600">{item.course}</p>
+                <p className="text-sm text-gray-500">{item.time}</p>
+                <p className="text-xs text-gray-400">{item.room}</p>
+              </div>
+            ))}
+          </TabsContent>
+        </Tabs>
+      </CardContent>
     </Card>
   );
 };

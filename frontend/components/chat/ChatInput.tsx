@@ -1,36 +1,43 @@
-import React, { useState } from 'react';
-import { useQuery } from '@/hooks/useQuery';
-import { Button } from '@/components/ui/Button'; // Assuming you have a Button component in your UI folder
+'use client';
 
-const ChatInput: React.FC = () => {
-  const [input, setInput] = useState('');
-  const { loading, submit } = useQuery();
+import React, { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+
+interface ChatInputProps {
+  onSubmit: (message: string) => void;
+  loading: boolean;
+  error: string | null;
+}
+
+const ChatInput: React.FC<ChatInputProps> = ({ onSubmit, loading, error }) => {
+  const [message, setMessage] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim()) {
-      submit(input);
-      setInput('');
+    if (message.trim()) {
+      onSubmit(message);
+      setMessage('');
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="fixed bottom-0 left-0 right-0 p-4 bg-white dark:bg-gray-800">
-      <div className="flex">
-        <input
+    <div className="p-4 border-t bg-white">
+      {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
+      <form onSubmit={handleSubmit} className="flex gap-2">
+        <Input
           type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          className="flex-grow p-2 border rounded-l-md"
-          placeholder="Type your message..."
+          placeholder="Ask TerpAI anything..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
           disabled={loading}
+          className="flex-1"
         />
-        <Button type="submit" disabled={loading} className="ml-2">
+        <Button type="submit" disabled={loading || !message.trim()}>
           {loading ? 'Sending...' : 'Send'}
         </Button>
-      </div>
-      {loading && <div className="spinner">Loading...</div>} {/* Replace with your loading spinner */}
-    </form>
+      </form>
+    </div>
   );
 };
 

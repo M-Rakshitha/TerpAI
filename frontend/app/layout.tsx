@@ -1,19 +1,20 @@
-import React from 'react';
+import type { Metadata } from 'next'
+import type { ReactNode } from 'react'
+import './globals.css'
 
-const Layout: React.FC = ({ children }) => {
+export const metadata: Metadata = {
+  title: 'TerpAI',
+  description: 'AI Assistant for UMD Students',
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: ReactNode
+}) {
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="bg-gray-800 text-white p-4">
-        <h1 className="text-xl">TerpAI</h1>
-      </header>
-      <main className="flex-grow">
-        {children}
-      </main>
-      <footer className="bg-gray-800 text-white p-4 text-center">
-        <p>&copy; {new Date().getFullYear()} TerpAI. All rights reserved.</p>
-      </footer>
-    </div>
-  );
-};
-
-export default Layout;
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  )
+}

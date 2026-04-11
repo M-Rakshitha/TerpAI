@@ -1,37 +1,41 @@
+'use client';
+
 import React from 'react';
 import { EventsResult } from '@/lib/types';
-import { Card } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 
 interface EventsCardProps {
-  eventsData: EventsResult | null;
+  data: EventsResult;
 }
 
-const EventsCard: React.FC<EventsCardProps> = ({ eventsData }) => {
-  if (!eventsData || eventsData.events.length === 0) {
-    return null; // Don't render if no events
-  }
+const EventsCard: React.FC<EventsCardProps> = ({ data }) => {
+  const { events } = data;
 
   return (
     <Card>
-      <h2 className="text-lg font-semibold">Upcoming Events</h2>
-      <ul className="mt-4 space-y-2">
-        {eventsData.events.map((event, index) => (
-          <li key={index} className="flex justify-between items-center p-4 border-b">
-            <div>
-              <h3 className="font-medium">{event.title}</h3>
-              <p className="text-sm text-gray-500">{event.location}</p>
-              <p className="text-sm text-gray-400">{new Date(event.start).toLocaleString()}</p>
+      <CardHeader>
+        <CardTitle>Upcoming Events</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {events.map((event, index) => (
+          <div key={index} className="p-3 border rounded-lg">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">{event.title}</h3>
+              {event.free_food && <Badge variant="secondary">Free Food</Badge>}
             </div>
-            {event.free_food && <Badge color="green">Free Food</Badge>}
-            <div className="flex space-x-2">
+            <p className="text-sm text-gray-600">{event.location}</p>
+            <p className="text-sm text-gray-500">{new Date(event.start).toLocaleString()}</p>
+            <div className="flex gap-1 mt-2">
               {event.tags.map((tag, tagIndex) => (
-                <Badge key={tagIndex} color="blue">{tag}</Badge>
+                <Badge key={tagIndex} variant="outline" className="text-xs">
+                  {tag}
+                </Badge>
               ))}
             </div>
-          </li>
+          </div>
         ))}
-      </ul>
+      </CardContent>
     </Card>
   );
 };
