@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class QueryRequest(BaseModel):
     message: str = Field(min_length=1)
+    debug_trace_context: bool = False
 
 
 class StudyBlock(BaseModel):
@@ -135,9 +136,14 @@ class QueryResults(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     query: str
     agents_used: list[str]
     results: QueryResults
+    presentation: dict[str, Any] | None = None
+    agent_execution: dict[str, Any] | None = None
+    agent_outputs: dict[str, Any] | None = None
 
 
 class TaskPlannerContext(BaseModel):
@@ -145,6 +151,9 @@ class TaskPlannerContext(BaseModel):
     deadline_mentioned: bool
     location_mentioned: str | None
     enriched_query: str | None = None  # Descriptive rewrite of user message
+    ai_enrichment_used: bool | None = None
+    ai_routing_used: bool | None = None
+    ai_error: str | None = None
 
 
 class TaskPlannerResponse(BaseModel):

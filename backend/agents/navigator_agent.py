@@ -10,6 +10,9 @@ from typing import Any
 from urllib.parse import quote_plus
 
 import requests
+from backend.utils.runtime_flags import strict_live_mode_enabled
+from backend.utils.ai_workflow import call_gemini_with_retry
+from backend.utils.gemini_client import GeminiClientError
 
 
 MAP_BASE_URL = "https://map.umd.edu/"
@@ -257,9 +260,35 @@ def _build_steps(origin_name: str, destination_name: str, options: list[str]) ->
     return steps
 
 
+async def _generate_ai_navigation_tip(origin_name: str, destination_name: str, walk_minutes: int) -> str:
+    prompt = (
+        "You are a campus navigation assistant for UMD. "
+        "Write a concise 1-2 sentence walking guidance tip with safety/time awareness.\n\n"
+        f"Origin: {origin_name}\nDestination: {destination_name}\nEstimated walk minutes: {walk_minutes}\n"
+    )
+    return await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 4)
+
+
 async def run(context: dict) -> dict:
     origin_name, origin_building = _resolve_origin(context)
     destination_name, destination_building, suggestions = _resolve_destination(context)
+
+    if strict_live_mode_enabled():
+        has_precise_destination = bool(destination_building.get("name_short") or destination_building.get("number"))
+        if not has_precise_destination:
+            return {
+                "agent": "navigator",
+                "origin": origin_name,
+                "destination": destination_name,
+                "walk_minutes": 0,
+                "steps": [
+                    "Unable to resolve a precise campus destination from live map data.",
+                    "Try specifying an exact building name or acronym (for example AVW, ESJ, STAMP).",
+                ],
+                "map_url": f"{MAP_BASE_URL}?q={quote_plus(destination_name)}",
+                "error": "Destination could not be mapped to a known UMD building",
+                "options": suggestions[:5],
+            }
 
     walk_minutes = _estimate_walk_minutes(origin_building, destination_building)
     map_url = _build_map_url(destination_building, origin_building if origin_name != DEFAULT_ORIGIN or context.get("origin") else None)
@@ -283,5 +312,14 @@ async def run(context: dict) -> dict:
             "name_long": destination_building.get("name_long"),
             "coords": [destination_building.get("y"), destination_building.get("x")],
         }
+
+    try:
+        ai_tip = await _generate_ai_navigation_tip(origin_name, destination_name, walk_minutes)
+        result["ai_tip"] = ai_tip.strip()
+        result.setdefault("data_sources", {})["gemini_used"] = True
+    except (GeminiClientError, Exception) as exc:
+        result.setdefault("data_sources", {})["gemini_used"] = False
+        if strict_live_mode_enabled():
+            result["error"] = f"Navigator AI tip generation failed: {type(exc).__name__}: {exc}"
 
     return result

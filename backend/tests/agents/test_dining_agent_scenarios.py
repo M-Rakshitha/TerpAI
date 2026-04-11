@@ -194,3 +194,96 @@ async def test_dining_agent_reads_budget_menu_and_dietary_from_context_aliases()
     assert basis.get("budget") == 14.0
     assert "vegetarian" in basis.get("dietary_preferences", [])
     assert "pizza" in basis.get("menu_preferences", [])
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_respects_selected_option_for_route_preview() -> None:
+    result = await dining_agent.run(
+        {
+            "user_message": "Find dinner options",
+            "user_location": "McKeldin Library, University of Maryland",
+            "selected_option": "251 North Dining",
+        }
+    )
+
+    route_preview = result.get("route_preview", {})
+    assert route_preview.get("destination") == "251 North Dining"
+    assert "google.com/maps/dir" in str(route_preview.get("map_url", ""))
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_uses_origin_alias_for_location_context() -> None:
+    result = await dining_agent.run(
+        {
+            "user_message": "Show me nearby options",
+            "origin": "A.V. Williams Building",
+        }
+    )
+
+    route_preview = result.get("route_preview", {})
+    assert route_preview.get("origin") == "A.V. Williams Building"
+    assert "google.com/maps/dir" in str(route_preview.get("map_url", ""))
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_prioritizes_preference_matching_off_campus_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dining_agent, "_fetch_live_dining_names", lambda: ["South Campus Dining"])
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_overpass_restaurants",
+        lambda _lat, _lon, radius_m=2200: [
+            {
+                "lat": 38.9870,
+                "lon": -76.9425,
+                "tags": {"name": "Noodle Hub", "cuisine": "noodles;asian", "diet": "vegan options"},
+            }
+        ],
+    )
+
+    result = await dining_agent.run(
+        {
+            "user_message": "Find vegan noodles around me",
+            "dietary_restrictions": ["vegan"],
+            "menu_preferences": ["noodles"],
+            "user_location": "College Park, MD",
+            "budget": 20,
+        }
+    )
+
+    recommendations = result.get("menu_recommendations", [])
+    assert recommendations
+    assert recommendations[0].get("name") == "Noodle Hub"
+    assert recommendations[0].get("source") == "off_campus"
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_uses_nominatim_when_overpass_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dining_agent, "_fetch_live_dining_names", lambda: ["South Campus Dining"])
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_overpass_restaurants",
+        lambda _lat, _lon, radius_m=2200: (_ for _ in ()).throw(RuntimeError("overpass down")),
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_nominatim_restaurants",
+        lambda _origin_label, limit=12: [
+            {
+                "display_name": "Green Bowl, College Park, Maryland",
+                "lat": "38.9892",
+                "lon": "-76.9387",
+            }
+        ],
+    )
+
+    result = await dining_agent.run(
+        {
+            "user_message": "Find vegan dinner under $15",
+            "budget": 15,
+        }
+    )
+
+    options = result.get("options", [])
+    assert options
+    assert any(option.get("name") == "Green Bowl" for option in options)
+    assert result.get("data_sources", {}).get("off_campus") == "nominatim_search"

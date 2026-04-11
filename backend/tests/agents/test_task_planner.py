@@ -111,10 +111,10 @@ async def test_task_planner_activates_multiple_agents_in_parallel() -> None:
 
 @pytest.mark.asyncio
 async def test_task_planner_handles_vague_query() -> None:
-    """Test that vague queries get a default agent (schedule)."""
+    """Test that vague queries do not force unnecessary agents."""
     result = await task_planner.run("Hello")
     
-    assert result.tasks  # Should have at least one task
+    assert result.tasks == []
     assert isinstance(result.tasks, list)
 
 
@@ -164,3 +164,19 @@ async def test_task_planner_returns_consistent_structure() -> None:
     assert hasattr(result.context, "budget")
     assert hasattr(result.context, "deadline_mentioned")
     assert hasattr(result.context, "location_mentioned")
+
+
+@pytest.mark.asyncio
+async def test_task_planner_activates_finance_for_weekly_budget_planning() -> None:
+    result = await task_planner.run("Plan my weekly dining, travel, and classes budget under 150")
+
+    assert "finance" in result.tasks
+    assert result.context.budget == 150
+
+
+@pytest.mark.asyncio
+async def test_task_planner_activates_finance_for_budget_without_dollar_sign() -> None:
+    result = await task_planner.run("Can you help me plan monthly spending for events and food under 220")
+
+    assert "finance" in result.tasks
+    assert result.context.budget == 220
