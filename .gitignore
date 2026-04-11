@@ -42,3 +42,7 @@ yarn.lock
 # Build artifacts
 .next/
 .next/types/
+# Environment files
+.env
+.env.*
+backend/.env
