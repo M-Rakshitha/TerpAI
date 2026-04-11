@@ -3,16 +3,16 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-import google.generativeai as genai
+from google import genai
 
 
 class GeminiClientError(RuntimeError):
     """Raised when Gemini generation fails."""
 
 
-def _generate_content(prompt: str, model_name: str) -> str:
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
+def _generate_content(prompt: str, model_name: str, api_key: str) -> str:
+    with genai.Client(api_key=api_key) as client:
+        response = client.models.generate_content(model=model_name, contents=prompt)
     text = getattr(response, "text", None)
     if not text:
         raise GeminiClientError("Gemini returned an empty response")
@@ -28,10 +28,8 @@ def call_gemini(
     if not api_key:
         raise GeminiClientError("GEMINI_API_KEY is not configured")
 
-    genai.configure(api_key=api_key)
-
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_generate_content, prompt, model)
+        future = executor.submit(_generate_content, prompt, model, api_key)
         try:
             return future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:

@@ -314,13 +314,11 @@ Fail with `401 Unauthorized` if the token is missing, expired, or invalid. Do no
 Use `gemini-3.1-flash-lite` by default.
 
 ```python
-import google.generativeai as genai
-
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+from google import genai
 
 def call_gemini(prompt: str, model: str = "gemini-3.1-flash-lite") -> str:
-    model = genai.GenerativeModel(model)
-    response = model.generate_content(prompt)
+  with genai.Client(api_key=os.environ["GEMINI_API_KEY"]) as client:
+    response = client.models.generate_content(model=model, contents=prompt)
     return response.text
 ```
 

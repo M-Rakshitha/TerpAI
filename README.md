@@ -453,18 +453,18 @@ For detailed capabilities, see [docs/EVENTS_AGENT_CAPABILITIES.md](docs/EVENTS_A
 
 ## Dependencies
 
-| Package               | Version      | Purpose             |
-| --------------------- | ------------ | ------------------- |
-| `fastapi`             | 0.111+       | Web framework       |
-| `uvicorn`             | 0.27+        | ASGI server         |
-| `langgraph`           | 0.6.11+      | Agent orchestration |
-| `langchain-core`      | (transitive) | LLM abstractions    |
-| `pydantic`            | 2.0+         | Data validation     |
-| `python-jose`         | 3.3.0+       | JWT validation      |
-| `google-generativeai` | 0.3+         | Gemini API          |
-| `requests`            | 2.31+        | HTTP client         |
-| `pytest`              | 8.4+         | Testing framework   |
-| `pytest-asyncio`      | 0.24+        | Async test support  |
+| Package          | Version      | Purpose             |
+| ---------------- | ------------ | ------------------- |
+| `fastapi`        | 0.111+       | Web framework       |
+| `uvicorn`        | 0.27+        | ASGI server         |
+| `langgraph`      | 0.6.11+      | Agent orchestration |
+| `langchain-core` | (transitive) | LLM abstractions    |
+| `pydantic`       | 2.0+         | Data validation     |
+| `python-jose`    | 3.3.0+       | JWT validation      |
+| `google-genai`   | 1.72+        | Gemini API          |
+| `requests`       | 2.31+        | HTTP client         |
+| `pytest`         | 8.4+         | Testing framework   |
+| `pytest-asyncio` | 0.24+        | Async test support  |
 
 **Install:** `pip install -r backend/requirements.txt`
 

@@ -147,3 +147,50 @@ async def test_dining_agent_falls_back_when_sources_fail(monkeypatch: pytest.Mon
     assert result["agent"] == "dining"
     assert isinstance(result.get("options"), list)
     assert result["options"]
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_prioritizes_closest_campus_option_for_user_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dining_agent,
+        "_fetch_live_dining_names",
+        lambda: ["South Campus Dining", "Yahentamitsi Dining Hall", "251 North Dining"],
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_geocode_location",
+        lambda _location: (38.9907, -76.9378),
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_overpass_restaurants",
+        lambda _lat, _lon, radius_m=2200: [],
+    )
+
+    result = await dining_agent.run(
+        {
+            "user_message": "Find me food near Yahentamitsi",
+            "user_location": "Yahentamitsi Dining Hall",
+        }
+    )
+
+    options = result.get("options", [])
+    assert options
+    assert options[0].get("name") == "Yahentamitsi Dining Hall"
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_reads_budget_menu_and_dietary_from_context_aliases() -> None:
+    result = await dining_agent.run(
+        {
+            "user_message": "Find dinner options",
+            "max_budget": 14,
+            "dietary_preferences": ["Vegetarian"],
+            "food_preferences": ["Pizza"],
+        }
+    )
+
+    basis = result.get("recommendation_basis", {})
+    assert basis.get("budget") == 14.0
+    assert "vegetarian" in basis.get("dietary_preferences", [])
+    assert "pizza" in basis.get("menu_preferences", [])

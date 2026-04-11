@@ -19,7 +19,11 @@ except Exception:
     END = None
     StateGraph = None
 
-DEFAULT_LOCATIONS_URL = "https://dining.umd.edu/locations"
+DEFAULT_LOCATIONS_URL = "https://dining.umd.edu/hours-locations"
+FALLBACK_LOCATIONS_URLS = (
+    DEFAULT_LOCATIONS_URL,
+    "https://dining.umd.edu/locations",
+)
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 UMD_CAMPUS_CENTER = (38.9869, -76.9426)
@@ -113,24 +117,37 @@ def _extract_dining_names_from_locations_page(html: str) -> list[str]:
 
 
 def _fetch_live_dining_names() -> list[str]:
+    for page_url in [os.getenv("UMD_DINING_LOCATIONS_URL", DEFAULT_LOCATIONS_URL), *FALLBACK_LOCATIONS_URLS]:
+        try:
+            response = requests.get(page_url, timeout=4)
+            response.raise_for_status()
+            names = _extract_dining_names_from_locations_page(response.text)
+            if names:
+                return names
+        except Exception:
+            continue
+
     api_url = os.getenv("UMD_DINING_API_URL")
     api_key = os.getenv("UMD_DINING_API_KEY")
 
     if api_url:
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            headers: dict[str, str] = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
 
-        response = requests.get(api_url, headers=headers, timeout=4)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, list):
-            names = [str(item.get("name", "")).strip() for item in payload if isinstance(item, dict)]
-            return [name for name in names if name]
+            response = requests.get(api_url, headers=headers, timeout=4)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                names = [str(item.get("name", "")).strip() for item in payload if isinstance(item, dict)]
+                names = [name for name in names if name]
+                if names:
+                    return names
+        except Exception:
+            pass
 
-    response = requests.get(os.getenv("UMD_DINING_LOCATIONS_URL", DEFAULT_LOCATIONS_URL), timeout=4)
-    response.raise_for_status()
-    return _extract_dining_names_from_locations_page(response.text)
+    return list(KNOWN_DINING_HALLS.keys())
 
 
 def _haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -215,7 +232,17 @@ def _estimate_price_for_off_campus(tags: dict[str, Any]) -> float:
     return 15.0
 
 
-def _build_option(name: str, budget: float | None, source: str = "campus") -> dict[str, Any]:
+def _estimate_walk_minutes(origin: tuple[float, float], destination: tuple[float, float]) -> int:
+    km = _haversine_distance_km(origin[0], origin[1], destination[0], destination[1])
+    return max(2, int(round(km * 12)))
+
+
+def _build_option(
+    name: str,
+    budget: float | None,
+    source: str = "campus",
+    origin_coords: tuple[float, float] | None = None,
+) -> dict[str, Any]:
     defaults = KNOWN_DINING_HALLS.get(
         name,
         {
@@ -227,16 +254,21 @@ def _build_option(name: str, budget: float | None, source: str = "campus") -> di
         },
     )
     estimated_price = _safe_float(defaults.get("estimated_meal_price"), 12.0)
+    coords = defaults.get("coords", UMD_CAMPUS_CENTER)
+    distance_min = int(defaults.get("distance_min", 10))
+    if source == "campus" and origin_coords is not None and isinstance(coords, tuple) and len(coords) == 2:
+        distance_min = _estimate_walk_minutes(origin_coords, coords)
+
     return {
         "name": name,
-        "distance_min": int(defaults.get("distance_min", 10)),
+        "distance_min": distance_min,
         "budget_ok": budget is None or budget >= estimated_price,
         "hours_open": _is_open_by_default_hours(),
         "dietary_tags": list(defaults.get("dietary_tags", [])),
         "menu_highlights": list(defaults.get("menu_highlights", [])),
         "estimated_meal_price": estimated_price,
         "source": source,
-        "coords": defaults.get("coords", UMD_CAMPUS_CENTER),
+        "coords": coords,
     }
 
 
@@ -247,14 +279,16 @@ def _fallback_options(budget: float | None) -> list[dict[str, Any]]:
 def _node_ingest_context(state: DiningState) -> DiningState:
     context = state.get("context", {})
     message = str(context.get("user_message", ""))
-    budget_raw = context.get("budget")
+    budget_raw = context.get("budget") or context.get("max_budget") or context.get("budget_limit")
     budget = _safe_float(budget_raw, 0.0) if budget_raw is not None else _extract_budget_from_message(message)
 
-    dietary = list(context.get("dietary_restrictions", [])) if context.get("dietary_restrictions") else []
+    dietary_context = context.get("dietary_restrictions") or context.get("dietary_preferences") or []
+    dietary = list(dietary_context) if dietary_context else []
     dietary.extend(_extract_dietary_from_message(message))
     dietary = list(dict.fromkeys([d.lower().strip() for d in dietary if str(d).strip()]))
 
-    menu_preferences = list(context.get("menu_preferences", [])) if context.get("menu_preferences") else []
+    menu_context = context.get("menu_preferences") or context.get("food_preferences") or context.get("cuisine_preferences") or []
+    menu_preferences = list(menu_context) if menu_context else []
     menu_preferences.extend(_extract_menu_preferences(message))
     menu_preferences = list(dict.fromkeys([m.lower().strip() for m in menu_preferences if str(m).strip()]))
 
@@ -281,13 +315,19 @@ def _node_ingest_context(state: DiningState) -> DiningState:
 
 def _node_fetch_campus_options(state: DiningState) -> DiningState:
     budget = state.get("budget")
+    origin_coords = state.get("location_coords")
     try:
         names = list(dict.fromkeys([n for n in _fetch_live_dining_names() if n]))
     except Exception:
         names = list(KNOWN_DINING_HALLS.keys())
     if not names:
         names = list(KNOWN_DINING_HALLS.keys())
-    return {"campus_options": [_build_option(name, budget, source="campus") for name in names]}
+    return {
+        "campus_options": [
+            _build_option(name, budget, source="campus", origin_coords=origin_coords)
+            for name in names
+        ]
+    }
 
 
 def _node_fetch_off_campus_options(state: DiningState) -> DiningState:

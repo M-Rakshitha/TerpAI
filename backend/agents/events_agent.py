@@ -18,9 +18,10 @@ except Exception:
     END = None
     StateGraph = None
 
-# External APIs
-UMD_CALENDAR_API = "https://calendar.umd.edu/live/json/"
-EVENTBRITE_API = "https://www.eventbriteapi.com/v3/events/search"
+# External websites
+UMD_CALENDAR_HOME = "https://calendar.umd.edu/"
+UMD_CALENDAR_GRAPHQL = "https://calendar.umd.edu/graphql"
+EVENTBRITE_SEARCH_URL = "https://www.eventbrite.com/d/md--college-park/events/"
 UMD_EVENTS_RSS = "https://news.umd.edu/events/upcoming"
 
 EVENT_KEYWORDS = [
@@ -162,28 +163,152 @@ def _check_free_food_mention(message: str) -> bool:
     return any(phrase in lowered for phrase in ["free food", "food", "snacks", "refreshments"])
 
 
+def _fetch_html(url: str) -> str:
+    response = requests.get(url, timeout=6, headers={"User-Agent": "terpai-backend/0.1"})
+    response.raise_for_status()
+    return response.text
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+def _extract_public_token(html: str) -> str | None:
+    match = re.search(r"data-token=([^>\s]+)", html)
+    if match:
+        return match.group(1).strip('"\'')
+    return None
+
+
+def _extract_title_tags(text: str) -> list[str]:
+    lowered = text.lower()
+    found = [keyword for keyword in EVENT_KEYWORDS if keyword in lowered]
+    return found or ["general"]
+
+
+def _date_from_month_day(month_value: str | None, day_value: str | None) -> str | None:
+    if not month_value or not day_value:
+        return None
+
+    month_text = str(month_value).strip()
+    day_text = str(day_value).strip()
+    for date_format in ("%b %d %Y", "%B %d %Y"):
+        try:
+            date_value = datetime.strptime(f"{month_text} {day_text} {datetime.now().year}", date_format)
+            return date_value.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _date_from_label(label: str) -> str | None:
+    normalized = label.strip()
+    lowered = normalized.lower()
+    today = datetime.now()
+
+    if lowered == "today":
+        return today.strftime("%Y-%m-%d")
+    if lowered == "tomorrow":
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    weekday_map = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    for weekday_name, weekday_number in weekday_map.items():
+        if lowered.startswith(weekday_name):
+            days_ahead = (weekday_number - today.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    source = normalized if re.search(r"\b\d{4}\b", normalized) else f"{normalized} {today.year}"
+    for date_format in ("%a, %b %d %Y", "%A, %b %d %Y", "%b %d %Y"):
+        try:
+            parsed = datetime.strptime(source, date_format)
+            return parsed.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return None
+
+
+def _extract_date_and_time(text: str, title: str) -> tuple[str | None, str | None]:
+    title_index = text.find(title)
+    if title_index == -1:
+        return None, None
+
+    window = text[title_index : title_index + 240]
+    match = re.search(
+        r"(?P<label>(?:Today|Tomorrow|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+[A-Z][a-z]{2}\s+\d{1,2}|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*))\s*[•\-|]\s*(?P<time>[^\n•|]+)",
+        window,
+    )
+    if match:
+        return _date_from_label(match.group("label")), match.group("time").strip()
+
+    return None, None
+
+
 def _fetch_live_campus_events() -> list[dict[str, Any]]:
     try:
-        response = requests.get(UMD_CALENDAR_API, timeout=4)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, list):
-            events: list[dict[str, Any]] = []
-            for item in payload[:10]:
-                if isinstance(item, dict):
-                    event_dict = {
-                        "name": item.get("title", "").strip(),
-                        "date": item.get("start", ""),
-                        "time": item.get("time", ""),
-                        "location": item.get("location", "University of Maryland"),
-                        "url": item.get("url", ""),
-                        "tags": item.get("categories", []),
-                        "free_food": bool(item.get("free_food", False)),
-                        "category": item.get("category", "general"),
-                    }
-                    if event_dict["name"]:
-                        events.append(event_dict)
-            return events
+        home_html = _fetch_html(UMD_CALENDAR_HOME)
+        token = _extract_public_token(home_html)
+        if token:
+            query = (
+                "query getEvents($startDate: String!, $related: [QueryArgument]) {"
+                " entries: solspace_calendar {"
+                " events(relatedTo: $related loadOccurrences: true startsAfterOrAt: $startDate limit: 12 calendarId: [4, 2]) {"
+                " title url startMonth: startDate @formatDateTime(format: \"M\")"
+                " startDay: startDate @formatDateTime(format: \"d\")"
+                " endMonth: endDate @formatDateTime(format: \"M\")"
+                " endDay: endDate @formatDateTime(format: \"d\")"
+                " } } }"
+            )
+            response = requests.post(
+                UMD_CALENDAR_GRAPHQL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": "terpai-backend/0.1",
+                },
+                json={"query": query, "variables": {"startDate": datetime.now().strftime("%Y-%m-%d"), "related": []}},
+                timeout=8,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            entries = payload.get("data", {}).get("entries", {}) if isinstance(payload, dict) else {}
+            events_payload = entries.get("events", []) if isinstance(entries, dict) else []
+            if isinstance(events_payload, list):
+                events: list[dict[str, Any]] = []
+                for item in events_payload:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title", "")).strip()
+                    if not title:
+                        continue
+
+                    date_value = _date_from_month_day(item.get("startMonth"), item.get("startDay")) or datetime.now().strftime("%Y-%m-%d")
+                    url = str(item.get("url", "")).strip()
+                    event_text = title.lower()
+                    events.append(
+                        {
+                            "name": title,
+                            "date": date_value,
+                            "time": "TBA",
+                            "location": "University of Maryland",
+                            "url": url,
+                            "tags": _extract_title_tags(event_text),
+                            "free_food": any(term in event_text for term in ["food", "snack", "refreshment"]),
+                            "category": "campus",
+                        }
+                    )
+                if events:
+                    return events
     except Exception:
         pass
 
@@ -207,37 +332,42 @@ def _fetch_live_campus_events() -> list[dict[str, Any]]:
 
 
 def _query_eventbrite_nearby() -> list[dict[str, Any]]:
-    api_key = os.getenv("EVENTBRITE_API_KEY")
-    if not api_key:
-        return []
-
     try:
-        params = {
-            "location.latitude": 38.9869,
-            "location.longitude": -76.9426,
-            "location.address": "College Park, MD",
-            "token": api_key,
-            "sort_by": "date",
-        }
-        response = requests.get(EVENTBRITE_API, params=params, timeout=4)
-        response.raise_for_status()
-        payload = response.json()
+        html = _fetch_html(EVENTBRITE_SEARCH_URL)
+        text = _strip_html(html)
         events: list[dict[str, Any]] = []
-        for item in payload.get("events", [])[:5]:
-            if isinstance(item, dict):
-                start = item.get("start", {})
-                event_dict = {
-                    "name": item.get("name", {}).get("text", "").strip(),
-                    "date": start.get("local", ""),
-                    "time": start.get("local", "").split("T")[1] if "T" in start.get("local", "") else "TBA",
-                    "location": item.get("venue", {}).get("name", "College Park, MD") if isinstance(item.get("venue"), dict) else "College Park, MD",
-                    "url": item.get("url", ""),
+        seen: set[str] = set()
+
+        for match in re.finditer(r'aria-label="View ([^"]+)"', html):
+            title = match.group(1).strip()
+            if not title or title in seen:
+                continue
+
+            seen.add(title)
+            chunk = html[max(0, match.start() - 700) : match.start() + 1600]
+            url_match = re.search(r'href="([^"]+)"', chunk)
+            location_match = re.search(r'data-event-location="([^"]*)"', chunk)
+            paid_match = re.search(r'data-event-paid-status="([^"]*)"', chunk)
+
+            date_value, time_value = _extract_date_and_time(text, title)
+            if not date_value:
+                date_value = datetime.now().strftime("%Y-%m-%d")
+
+            events.append(
+                {
+                    "name": title,
+                    "date": date_value,
+                    "time": time_value or "TBA",
+                    "location": location_match.group(1).strip() if location_match else "College Park, MD",
+                    "url": url_match.group(1).strip() if url_match else "",
                     "tags": ["eventbrite", "nearby"],
-                    "free_food": "food" in str(item.get("description", "")).lower() or "refreshments" in str(item.get("description", "")).lower(),
+                    "free_food": (paid_match.group(1).lower() == "free") if paid_match else False,
                     "category": "nearby",
                 }
-                if event_dict["name"]:
-                    events.append(event_dict)
+            )
+
+            if len(events) >= 10:
+                break
         return events
     except Exception:
         return []
