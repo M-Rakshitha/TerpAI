@@ -735,8 +735,6 @@ async def _verify_and_reinvoke_agents(
         if request_id is not None:
             reinvoke_start["request_id"] = request_id
         trace.append(reinvoke_start)
-        if emit is not None:
-            await emit(reinvoke_start)
 
         scoped_context = dict(per_agent_context.get(agent, {}))
         scoped_context["verification_feedback"] = verdict.get("gaps", [])
@@ -815,8 +813,6 @@ async def _verify_and_reinvoke_agents(
         if request_id is not None:
             reinvoke_done["request_id"] = request_id
         trace.append(reinvoke_done)
-        if emit is not None:
-            await emit(reinvoke_done)
 
     overall_score = int(sum(int(item.get("score", 0)) for item in verification_items) / max(1, len(verification_items)))
     verification_summary = {
@@ -891,7 +887,7 @@ async def _recover_weak_results(
                         recovery_context,
                         context_by_agent={"dining": recovery_scoped},
                         timeout_seconds=max(20, timeout_seconds // 2),
-                        progress_callback=progress_callback,
+                        progress_callback=None,
                     ),
                     timeout=max(20, timeout_seconds // 2),
                 )
@@ -935,7 +931,7 @@ async def _recover_weak_results(
                         nav_context,
                         context_by_agent={"navigator": nav_scoped},
                         timeout_seconds=max(20, timeout_seconds // 2),
-                        progress_callback=progress_callback,
+                        progress_callback=None,
                     ),
                     timeout=max(20, timeout_seconds // 2),
                 )
@@ -978,7 +974,7 @@ async def _recover_weak_results(
                     nav_context,
                     context_by_agent={"navigator": nav_scoped},
                     timeout_seconds=max(20, timeout_seconds // 2),
-                    progress_callback=progress_callback,
+                    progress_callback=None,
                 ),
                 timeout=max(20, timeout_seconds // 2),
             )
@@ -1032,7 +1028,7 @@ async def _recover_weak_results(
                         nav_context,
                         context_by_agent={"navigator": nav_scoped},
                         timeout_seconds=max(18, timeout_seconds // 3),
-                        progress_callback=progress_callback,
+                        progress_callback=None,
                     ),
                     timeout=max(18, timeout_seconds // 3),
                 )

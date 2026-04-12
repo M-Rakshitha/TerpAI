@@ -151,7 +151,7 @@ function GoogleRouteMap({
 }: {
   center: LatLng
   origin: LatLng | null
-  destinations: Array<{ name: string; coord: LatLng }>
+  destinations: Array<{ name: string; coord?: LatLng }>
 }) {
   const mapRef = useRef<HTMLDivElement | null>(null)
   const mapInstance = useRef<any>(null)
@@ -165,13 +165,47 @@ function GoogleRouteMap({
       return
     }
 
+    const geocodeDestinations = async (dests: Array<{ name: string; coord?: LatLng }>) => {
+      const google = (window as any).google
+      const geocoder = new google.maps.Geocoder()
+      
+      const geocodedDests = await Promise.all(
+        dests.map(async (dest) => {
+          if (dest.coord) return dest
+          
+          try {
+            const result = await new Promise<google.maps.GeocoderResult[]>((resolve, reject) => {
+              geocoder.geocode({ address: dest.name }, (results, status) => {
+                if (status === 'OK' && results) resolve(results)
+                else reject(new Error(`Geocoding failed for ${dest.name}`))
+              })
+            })
+            
+            if (result.length > 0) {
+              const location = result[0].geometry.location
+              return {
+                name: dest.name,
+                coord: { lat: location.lat(), lng: location.lng() },
+              }
+            }
+          } catch (err) {
+            console.warn(`Failed to geocode ${dest.name}:`, err)
+          }
+          
+          return null
+        })
+      )
+      
+      return geocodedDests.filter((d) => d !== null) as Array<{ name: string; coord: LatLng }>
+    }
+
     const initializeMap = async () => {
       if (typeof window === 'undefined' || !mapRef.current) return
 
       // Load Google Maps script
       if (!(window as any).google?.maps) {
         const script = document.createElement('script')
-        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=routes`
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry,geocoding,routes`
         script.async = true
         script.defer = true
         script.onload = () => {
@@ -184,9 +218,12 @@ function GoogleRouteMap({
       }
     }
 
-    const setupMap = () => {
+    const setupMap = async () => {
       if (!isMounted || !mapRef.current) return
       const google = (window as any).google
+
+      // Geocode destinations that don't have coordinates
+      const geocodedDests = await geocodeDestinations(destinations)
 
       // Create map
       mapInstance.current = new google.maps.Map(mapRef.current, {
@@ -292,7 +329,7 @@ function GoogleRouteMap({
       }
 
       // Add destination markers (gold) and draw routes
-      destinations.forEach((dest, idx) => {
+      geocodedDests.forEach((dest, idx) => {
         new google.maps.Marker({
           position: { lat: dest.coord.lat, lng: dest.coord.lng },
           map: mapInstance.current,
@@ -334,10 +371,10 @@ function GoogleRouteMap({
       if (origin) {
         bounds.extend({ lat: origin.lat, lng: origin.lng })
       }
-      destinations.forEach((dest) => {
+      geocodedDests.forEach((dest) => {
         bounds.extend({ lat: dest.coord.lat, lng: dest.coord.lng })
       })
-      if (origin || destinations.length > 0) {
+      if (origin || geocodedDests.length > 0) {
         mapInstance.current.fitBounds(bounds, { top: 24, right: 24, bottom: 24, left: 24 })
       }
     }
@@ -362,6 +399,11 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
   const studyResources = response?.results?.study_resources
   const jobsResearch = response?.results?.jobs_research
 
+  // Extract user location from dining route_preview or navigator origin
+  const userLocationCoordStr = dining?.route_preview?.origin || navigator?.origin
+  const userLocationCoord = userLocationCoordStr ? parseCoordText(userLocationCoordStr) : null
+  const userLocationName = dining?.route_preview?.origin ? 'Your location' : navigator?.origin ? navigator.origin : 'Current location'
+
   const diningOptions = dining?.options || []
   const topDining = diningOptions
     .filter((item) => item && item.name)
@@ -379,10 +421,12 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
   const tutoring = (studyResources?.tutoring || []).slice(0, 5)
   const officeHours = (studyResources?.office_hours || []).slice(0, 5)
 
-  const destinationText = navigator?.destination || ''
+  const destinationText = navigator?.destination || dining?.route_preview?.destination || ''
   const destinationCoord = destinationText ? parseCoordText(destinationText) : null
-  const destinationCoords = destinationCoord ? [{ name: destinationText, coord: destinationCoord }] : []
-  const originCoord = parseCoordText(navigator?.origin)
+  const destinationCoords = destinationText
+    ? [{ name: destinationText, coord: destinationCoord || undefined }]
+    : []
+  const originCoord = userLocationCoord
   const mapCenter = originCoord || destinationCoords[0]?.coord || { lat: 38.9869, lng: -76.9426 }
 
   const hasNavigationMap = Boolean(
@@ -550,7 +594,7 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs uppercase tracking-[0.3em] text-[#FFD200]">Navigation Route</p>
-                  <h3 className="mt-2 text-xl font-semibold text-white">Exact route from {navigator?.origin} to {navigator?.destination}</h3>
+                  <h3 className="mt-2 text-xl font-semibold text-white">Route from {userLocationName} to {destinationText}</h3>
                 </div>
                 {typeof navigator?.map_url === 'string' && (
                   <a
@@ -586,76 +630,112 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
           )}
 
             <div className="mt-8 space-y-6">
-            {topDining.length > 0 && (
+            {/* Dining Agent Section */}
+            {dining && (
               <div className="rounded-[30px] border border-[#FFB81C]/20 bg-[#111827] p-6">
-                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">Dining picks</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Best nearby options</h3>
-                <div className="mt-4 space-y-3">
-                  {topDining.slice(0, 5).map((item, index) => (
-                    <div key={item.name} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">{item.name}</p>
-                          <p className="mt-1 text-xs text-gray-400">{Number(item.distance_min) > 0 ? `${item.distance_min} min walk` : 'Distance unknown'}</p>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">🍽️ Dining Agent</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Food options near {userLocationName}</h3>
+                {dining.ai_recommendation && (
+                  <p className="mt-3 text-sm leading-6 text-gray-300 italic">{dining.ai_recommendation}</p>
+                )}
+                {topDining.length > 0 ? (
+                  <>
+                    {dining.warning && !dining.warning.toLowerCase().includes("no live") && (
+                      <p className="mt-2 text-xs text-gray-400">{dining.warning}</p>
+                    )}
+                    <div className="mt-4 space-y-3">
+                      {topDining.slice(0, 6).map((item, index) => (
+                        <div key={item.name} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold text-white">{item.name}</p>
+                              <p className="mt-1 text-xs text-gray-400">{Number(item.distance_min) > 0 ? `${item.distance_min} min walk` : 'Distance unknown'}</p>
+                            </div>
+                            {renderTag(item.hours_open ? 'Open now' : 'Hours unknown', item.hours_open ? 'green' : 'neutral')}
+                          </div>
+                          {maxDiningDistance > 0 && Number(item.distance_min) > 0 && (
+                            <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/5">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-[#FFD200] via-[#E31937] to-[#60A5FA]"
+                                style={{ width: meterWidth(Math.max(maxDiningDistance - (Number(item.distance_min) || maxDiningDistance), 0), Math.max(maxDiningDistance, 1)) }}
+                              />
+                            </div>
+                          )}
+                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                            {renderTag(item.budget_ok ? 'Fits budget' : 'Budget stretch', item.budget_ok ? 'blue' : 'red')}
+                            {item.dietary_tags && item.dietary_tags.slice(0, 3).map((tag) => renderTag(tag, 'gold'))}
+                            {item.source_url && <ExternalLink href={item.source_url} label="View" />}
+                          </div>
                         </div>
-                        {renderTag(item.hours_open ? 'Open now' : 'Hours unknown', item.hours_open ? 'green' : 'neutral')}
-                      </div>
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/5">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-[#FFD200] via-[#E31937] to-[#60A5FA]"
-                          style={{ width: meterWidth(Math.max(maxDiningDistance - (Number(item.distance_min) || maxDiningDistance), 0), Math.max(maxDiningDistance, 1)) }}
-                        />
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                        {renderTag(item.budget_ok ? 'Fits budget' : 'Budget stretch', item.budget_ok ? 'blue' : 'red')}
-                        {item.dietary_tags.slice(0, 3).map((tag) => renderTag(tag, 'gold'))}
-                        {item.source_url && <ExternalLink href={item.source_url} label="Source" />}
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-[#0f0f0f] p-6 text-center">
+                    <p className="text-sm text-gray-400">
+                      {dining.needs_user_input 
+                        ? 'Share your location to find nearby dining options' 
+                        : 'No dining options found for your criteria'}
+                    </p>
+                    {dining.follow_up_questions && dining.follow_up_questions.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {dining.follow_up_questions.slice(0, 2).map((q, idx) => (
+                          <p key={idx} className="text-xs text-gray-500">• {q}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
-            {topEvents.length > 0 && (
+            {/* Events Agent Section */}
+            {events && (
               <div className="rounded-[30px] border border-[#FFB81C]/20 bg-[#111827] p-6">
-                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">Events</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Upcoming matches</h3>
-                <div className="mt-4 space-y-3">
-                  {topEvents.map((event, idx) => (
-                    <div key={`${event.title}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">{event.title}</p>
-                          <p className="mt-1 text-xs text-gray-400">{event.location}</p>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">📅 Events Agent</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Campus events</h3>
+                {topEvents.length > 0 ? (
+                  <div className="mt-4 space-y-3">
+                    {topEvents.map((event, idx) => (
+                      <div key={`${event.title}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1">
+                            <p className="text-sm font-semibold text-white">{event.title}</p>
+                            <p className="mt-1 text-xs text-gray-400">{event.location}</p>
+                          </div>
+                          {renderTag(event.free_food ? 'Free food' : 'Campus event', event.free_food ? 'green' : 'gold')}
                         </div>
-                        {event.free_food ? renderTag('Free food', 'green') : renderTag('Campus event', 'gold')}
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {renderTag(formatDateTime(event.start) || event.start, 'neutral')}
+                          {event.tags && event.tags.slice(0, 2).map((tag) => renderTag(tag, 'blue'))}
+                        </div>
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        {renderTag(formatDateTime(event.start) || event.start, 'neutral')}
-                        {event.tags.slice(0, 3).map((tag) => renderTag(tag, 'blue'))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-[#0f0f0f] p-6 text-center">
+                    <p className="text-sm text-gray-400">No upcoming events match your request</p>
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Finance Agent Section */}
             {finance && (
               <div className="rounded-[30px] border border-[#FFB81C]/20 bg-[#111827] p-6">
-                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">Finance</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Budget snapshot</h3>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">💰 Finance Agent</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Budget analysis</h3>
                 <div className="mt-4 rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
-                  <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-gray-400">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-gray-400 mb-3">
                     <span>Spent</span>
                     <span>Remaining</span>
                   </div>
-                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-white/5">
+                  <div className="h-3 overflow-hidden rounded-full bg-white/5">
                     <div className="h-full rounded-full bg-gradient-to-r from-[#E31937] to-[#FFB81C]" style={{ width: `${weeklySpentPercent}%` }} />
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-3">
                     <div className="rounded-xl border border-white/10 bg-[#111827] p-3">
-                      <p className="text-xs text-gray-400">Weekly spent</p>
+                      <p className="text-xs text-gray-400">This week</p>
                       <p className="mt-1 text-lg font-bold text-white">${finance.weekly_spent.toFixed(2)}</p>
                     </div>
                     <div className="rounded-xl border border-white/10 bg-[#111827] p-3">
@@ -668,54 +748,62 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
                     {renderTag(`${weeklyRemainingPercent}% remaining`, 'green')}
                   </div>
                 </div>
-                <p className="mt-4 text-sm leading-7 text-gray-300">{finance.suggestion}</p>
+                {finance.suggestion && (
+                  <p className="mt-4 text-sm leading-6 text-gray-300">{finance.suggestion}</p>
+                )}
               </div>
             )}
 
+            {/* Schedule Agent Section */}
             {schedule && (
               <div className="rounded-[30px] border border-[#FFB81C]/20 bg-[#111827] p-6">
-                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">Study Plan</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Time blocks and next deadline</h3>
-                {schedule.next_deadline?.title && (
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
-                    <p className="text-xs uppercase tracking-[0.2em] text-[#FFD200]">Next deadline</p>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">📚 Schedule Agent</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Your study plan</h3>
+                {schedule.next_deadline?.title ? (
+                  <div className="mt-4 rounded-2xl border border-[#FFD200]/20 bg-[#0f0f0f] p-4">
+                    <p className="text-xs uppercase tracking-[0.2em] text-[#FFD200]">⏰ Next deadline</p>
                     <p className="mt-2 text-sm font-semibold text-white">{schedule.next_deadline.title}</p>
                     <p className="mt-1 text-xs text-gray-400">{formatDateTime(schedule.next_deadline.due) || schedule.next_deadline.due}</p>
                   </div>
-                )}
-                <div className="mt-4 space-y-3">
-                  {(schedule.study_blocks || []).slice(0, 5).map((block, idx) => (
-                    <div key={`${block.subject}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4 text-sm text-gray-200">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-white">{block.subject}</p>
-                          <p className="mt-1 text-xs text-gray-400">{block.start} - {block.end}</p>
+                ) : null}
+                {schedule.study_blocks && schedule.study_blocks.length > 0 && (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Study blocks</p>
+                    {schedule.study_blocks.slice(0, 5).map((block, idx) => (
+                      <div key={`${block.subject}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold text-white">{block.subject}</p>
+                            <p className="mt-1 text-xs text-gray-400">{block.start} - {block.end}</p>
+                          </div>
+                          {renderTag(block.type, 'gold')}
                         </div>
-                        {renderTag(block.type, 'gold')}
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
+            {/* Study Resources Agent Section */}
             {(tutoring.length > 0 || officeHours.length > 0) && (
               <div className="rounded-[30px] border border-[#FFB81C]/20 bg-[#111827] p-6">
-                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">Study Resources</p>
-                <h3 className="mt-2 text-xl font-semibold text-white">Help options for your courses</h3>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#FFB81C]">🎓 Study Resources Agent</p>
+                <h3 className="mt-2 text-xl font-semibold text-white">Academic support available</h3>
                 <div className="mt-4 space-y-4">
                   {tutoring.length > 0 && (
                     <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <p className="text-sm font-semibold text-white">Tutoring</p>
-                        {renderTag(`${tutoring.length} listings`, 'blue')}
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-semibold text-white">Tutoring Services</p>
+                        {renderTag(`${tutoring.length}`, 'blue')}
                       </div>
                       <div className="space-y-2">
                         {tutoring.map((item, idx) => (
                           <div key={`${item.service}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4 text-sm">
-                            <p className="font-semibold text-white">{item.service} · {item.subject}</p>
+                            <p className="font-semibold text-white">{item.service}</p>
+                            <p className="mt-1 text-xs text-gray-400">{item.subject}</p>
                             <p className="mt-1 text-xs text-gray-400">{item.schedule}</p>
-                            <p className="mt-1 text-xs text-gray-400">{item.location}</p>
+                            {item.location && <p className="mt-1 text-xs text-gray-400">{item.location}</p>}
                           </div>
                         ))}
                       </div>
@@ -723,16 +811,17 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
                   )}
                   {officeHours.length > 0 && (
                     <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <p className="text-sm font-semibold text-white">Office hours</p>
-                        {renderTag(`${officeHours.length} listings`, 'gold')}
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-sm font-semibold text-white">Office Hours</p>
+                        {renderTag(`${officeHours.length}`, 'gold')}
                       </div>
                       <div className="space-y-2">
                         {officeHours.map((item, idx) => (
                           <div key={`${item.professor}-${idx}`} className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4 text-sm">
-                            <p className="font-semibold text-white">{item.professor} ({item.course})</p>
+                            <p className="font-semibold text-white">{item.professor}</p>
+                            <p className="mt-1 text-xs text-gray-400">{item.course}</p>
                             <p className="mt-1 text-xs text-gray-400">{item.time}</p>
-                            <p className="mt-1 text-xs text-gray-400">{item.room}</p>
+                            {item.room && <p className="mt-1 text-xs text-gray-400">{item.room}</p>}
                           </div>
                         ))}
                       </div>
