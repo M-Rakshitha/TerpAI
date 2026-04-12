@@ -183,7 +183,7 @@ export default function AgentsPage({ query, stages, response, revealed, onReveal
                   onClick={onRevealSummary}
                   className="inline-flex items-center justify-center rounded-[28px] bg-[#E31937] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#c61631]"
                 >
-                  {revealed ? 'Summary revealed' : 'Show aggregator summary'}
+                  {revealed ? 'Report opened' : 'Open final report'}
                 </button>
               )}
             </div>

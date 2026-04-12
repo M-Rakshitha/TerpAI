@@ -244,6 +244,69 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
     if not highlights:
         highlights.append("No agent results available yet")
 
+    successful_agents = sum(1 for item in activation_items if item.get("status") == "ok")
+    errored_agents = sum(1 for item in activation_items if item.get("status") == "error")
+    missing_agents = sum(1 for item in activation_items if item.get("status") == "no_output")
+
+    visual_report = {
+        "headline": f"{len(agents_used)} agent{'s' if len(agents_used) != 1 else ''} synthesized into one campus report",
+        "subheadline": "Structured text, numbers, and live agent results are normalized for visual rendering.",
+        "metrics": [
+            {
+                "label": "Activated agents",
+                "value": len(agents_used),
+                "suffix": "agents",
+                "tone": "accent",
+            },
+            {
+                "label": "Healthy outputs",
+                "value": successful_agents,
+                "suffix": f"/ {len(agents_used)}",
+                "tone": "success",
+            },
+            {
+                "label": "Highlights",
+                "value": len(highlights),
+                "suffix": "notes",
+                "tone": "warning",
+            },
+            {
+                "label": "Quick actions",
+                "value": len(quick_actions),
+                "suffix": "links",
+                "tone": "neutral",
+            },
+        ],
+        "charts": [
+            {
+                "id": "agent_coverage",
+                "title": "Agent Coverage",
+                "kind": "bar",
+                "data": [
+                    {
+                        "label": item.get("agent"),
+                        "value": 100 if item.get("status") == "ok" else 45 if item.get("status") == "error" else 12,
+                        "detail": item.get("status"),
+                    }
+                    for item in activation_items
+                ],
+            },
+            {
+                "id": "output_health",
+                "title": "Output Health",
+                "kind": "pie",
+                "data": [
+                    {"label": "Ready", "value": successful_agents},
+                    {"label": "Errored", "value": errored_agents},
+                    {"label": "Missing", "value": missing_agents},
+                ],
+                "colors": ["#16A34A", "#DC2626", "#9CA3AF"],
+            },
+        ],
+        "story_points": highlights[:5],
+        "section_count": len(sections),
+    }
+
     return {
         "layout": "dashboard",
         "summary": {
@@ -254,6 +317,7 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
         },
         "sections": sections,
         "quick_actions": [action for action in quick_actions if action.get("target")],
+        "visual_report": visual_report,
     }
 
 

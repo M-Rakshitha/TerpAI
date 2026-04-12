@@ -20,6 +20,7 @@ export interface QueryPresentation {
   summary?: QuerySummary;
   sections?: QuerySection[];
   quick_actions?: QueryQuickAction[];
+  visual_report?: QueryVisualReport | null;
 }
 
 export interface QuerySummary {
@@ -43,6 +44,37 @@ export interface QueryQuickAction {
   agent?: string;
   action?: string;
   target?: string;
+}
+
+export interface QueryVisualReport {
+  headline?: string;
+  subheadline?: string;
+  metrics?: QueryVisualMetric[];
+  charts?: QueryVisualChart[];
+  story_points?: string[];
+  section_count?: number;
+}
+
+export interface QueryVisualMetric {
+  label?: string;
+  value?: number | string;
+  suffix?: string;
+  tone?: 'accent' | 'success' | 'warning' | 'neutral' | string;
+}
+
+export interface QueryVisualChart {
+  id?: string;
+  title?: string;
+  kind?: 'bar' | 'pie' | 'line' | string;
+  data?: QueryVisualChartDatum[];
+  colors?: string[];
+}
+
+export interface QueryVisualChartDatum {
+  label?: string;
+  value?: number;
+  detail?: string;
+  color?: string;
 }
 
 export interface QueryExecution {

@@ -161,6 +161,12 @@ SENSITIVE_CONTEXT_TOKENS = {
 LOG_DIR = Path(os.getenv("BACKEND_LOG_DIR", Path(__file__).resolve().parent / "logs"))
 APP_LOG_FILE = os.getenv("BACKEND_APP_LOG_FILE", "backend.log")
 APP_LOG_PATH = LOG_DIR / APP_LOG_FILE
+RAW_RESPONSE_PATH = Path(
+    os.getenv(
+        "BACKEND_RAW_RESPONSE_PATH",
+        str(LOG_DIR / "latest_query_response.json"),
+    )
+)
 
 
 def _configure_logging() -> logging.Logger:
@@ -179,8 +185,17 @@ def _configure_logging() -> logging.Logger:
 LOGGER = _configure_logging()
 
 
-async def _persist_event(event: dict, channel: str) -> None:
-    return None
+async def _persist_latest_response(response: QueryResponse) -> None:
+    snapshot = response.model_dump(mode="json")
+
+    def _write_snapshot() -> None:
+        RAW_RESPONSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RAW_RESPONSE_PATH.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    try:
+        await asyncio.to_thread(_write_snapshot)
+    except Exception as exc:
+        LOGGER.warning("Failed to persist latest response snapshot: %s", exc)
 
 
 def _ts() -> str:
@@ -258,29 +273,11 @@ async def query(
     payload: QueryRequest,
 ) -> QueryResponse:
     request_id = str(uuid4())
-    await _persist_event(
-        {
-            "type": "query_received",
-            "request_id": request_id,
-            "timestamp": _ts(),
-            "message": payload.message,
-        },
-        channel="http",
-    )
     response, _ = await _execute_pipeline(
         message=payload.message,
         request_id=request_id,
         include_context=payload.debug_trace_context or _is_truthy_env("TRACE_INCLUDE_CONTEXT_DEFAULT", "false"),
         emit=None,
-    )
-    await _persist_event(
-        {
-            "type": "query_result",
-            "request_id": request_id,
-            "timestamp": _ts(),
-            "payload": response.model_dump(),
-        },
-        channel="http",
     )
     return response
 
@@ -326,7 +323,6 @@ async def _execute_pipeline(
             if isinstance(agent, str) and agent in AGENT_WORK_SUMMARY:
                 enriched["work"] = AGENT_WORK_SUMMARY[agent]
             trace.append(enriched)
-            await _persist_event(enriched, channel="pipeline")
             if emit is not None:
                 await emit(enriched)
 
@@ -335,7 +331,6 @@ async def _execute_pipeline(
             planner_start["request_id"] = request_id
         planner_start = _attach_context(planner_start)
         trace.append(planner_start)
-        await _persist_event(planner_start, channel="pipeline")
         if emit is not None:
             await emit(planner_start)
 
@@ -385,7 +380,6 @@ async def _execute_pipeline(
             planner_done["request_id"] = request_id
         planner_done = _attach_context(planner_done)
         trace.append(planner_done)
-        await _persist_event(planner_done, channel="pipeline")
         if emit is not None:
             await emit(planner_done)
 
@@ -410,7 +404,6 @@ async def _execute_pipeline(
             "work": AGENT_WORK_SUMMARY["aggregator"],
         }
         trace.append(aggregator_start)
-        await _persist_event(aggregator_start, channel="pipeline")
         if emit is not None:
             await emit(aggregator_start)
 
@@ -424,20 +417,21 @@ async def _execute_pipeline(
             "work": AGENT_WORK_SUMMARY["aggregator"],
         }
         trace.append(aggregator_done)
-        await _persist_event(aggregator_done, channel="pipeline")
         if emit is not None:
             await emit(aggregator_done)
 
+        await _persist_latest_response(response)
         return response, trace
     except Exception:
         failed = {"type": "pipeline_status", "status": "failed", "timestamp": _ts()}
         if request_id is not None:
             failed["request_id"] = request_id
         trace = [failed]
-        await _persist_event(failed, channel="pipeline")
         if emit is not None:
             await emit(failed)
-        return aggregate(message, [], {}, execution_trace=trace), trace
+        response = aggregate(message, [], {}, execution_trace=trace)
+        await _persist_latest_response(response)
+        return response, trace
 
 
 @app.post("/api/query/stream")
@@ -455,15 +449,6 @@ async def query_stream(payload: QueryRequest) -> StreamingResponse:
                 "timestamp": _ts(),
                 "message": payload.message,
             }
-        )
-        await _persist_event(
-            {
-                "type": "query_received",
-                "request_id": request_id,
-                "timestamp": _ts(),
-                "message": payload.message,
-            },
-            channel="sse",
         )
 
         async def _emit_collect(event: dict) -> None:
@@ -483,15 +468,6 @@ async def query_stream(payload: QueryRequest) -> StreamingResponse:
                     "timestamp": _ts(),
                     "payload": response.model_dump(),
                 }
-            )
-            await _persist_event(
-                {
-                    "type": "query_result",
-                    "request_id": request_id,
-                    "timestamp": _ts(),
-                    "payload": response.model_dump(),
-                },
-                channel="sse",
             )
             await queue.put(None)
 
@@ -546,15 +522,6 @@ async def ws_query(websocket: WebSocket) -> None:
                     "message": message,
                 }
             )
-            await _persist_event(
-                {
-                    "type": "query_received",
-                    "request_id": request_id,
-                    "timestamp": _ts(),
-                    "message": message,
-                },
-                channel="websocket",
-            )
 
             try:
                 response, _ = await _execute_pipeline(
@@ -572,15 +539,6 @@ async def ws_query(websocket: WebSocket) -> None:
                         "payload": response.model_dump(),
                     }
                 )
-                await _persist_event(
-                    {
-                        "type": "query_result",
-                        "request_id": request_id,
-                        "timestamp": _ts(),
-                        "payload": response.model_dump(),
-                    },
-                    channel="websocket",
-                )
             except Exception as exc:
                 await websocket.send_json(
                     {
@@ -589,15 +547,6 @@ async def ws_query(websocket: WebSocket) -> None:
                         "timestamp": _ts(),
                         "detail": str(exc),
                     }
-                )
-                await _persist_event(
-                    {
-                        "type": "query_error",
-                        "request_id": request_id,
-                        "timestamp": _ts(),
-                        "detail": str(exc),
-                    },
-                    channel="websocket",
                 )
     except WebSocketDisconnect:
         return
