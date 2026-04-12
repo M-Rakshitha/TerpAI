@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@auth0/nextjs-auth0';
 
 import { isAuth0EnvConfigured } from '@/lib/auth0-env';
+import { getAuthUserFromRequest } from '@/lib/auth-user';
 import { getBackendBaseUrl } from '@/lib/backend-server';
 
 export const dynamic = 'force-dynamic';
@@ -11,8 +11,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Auth0 is not configured' }, { status: 503 });
   }
 
-  const session = await getSession();
-  if (!session?.user?.sub) {
+  const user = await getAuthUserFromRequest(request);
+  if (!user?.sub) {
     return NextResponse.json({ error: 'Not signed in' }, { status: 401 });
   }
 
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       'X-TerpAI-Calendar-Secret': linkSecret,
     },
     body: JSON.stringify({
-      user_sub: session.user.sub,
+      user_sub: user.sub,
       title: payload.title,
       location: payload.location ?? null,
       start: payload.start,

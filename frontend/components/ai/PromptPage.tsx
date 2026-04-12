@@ -36,7 +36,7 @@ export default function PromptPage({ onSubmit }: PromptPageProps) {
           <h1 className="mb-4 text-6xl font-black tracking-tight text-white sm:text-7xl">
             Welcome to{' '}
             <span className="bg-gradient-to-r from-[#E31937] to-[#FFB81C] bg-clip-text text-transparent">
-              TerpAI
+              CampusPilot
             </span>
           </h1>
           <p className="mx-auto max-w-2xl text-xl font-light leading-relaxed text-gray-300">

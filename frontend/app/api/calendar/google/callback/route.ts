@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@auth0/nextjs-auth0';
 
 import { getAppBaseUrl } from '@/lib/app-base-url';
 import { isAuth0EnvConfigured } from '@/lib/auth0-env';
+import { getAuthUserFromRequest } from '@/lib/auth-user';
 import { getBackendBaseUrl } from '@/lib/backend-server';
 import { verifyGoogleOAuthState } from '@/lib/google-oauth-state';
 
@@ -15,8 +15,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(home);
   }
 
-  const session = await getSession();
-  if (!session?.user?.sub) {
+  const user = await getAuthUserFromRequest(request);
+  if (!user?.sub) {
     const base = getAppBaseUrl();
     return NextResponse.redirect(new URL('/api/auth/login', base));
   }
@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(home);
   }
 
-  if (!verifyGoogleOAuthState(state, session.user.sub)) {
+  if (!verifyGoogleOAuthState(state, user.sub)) {
     home.searchParams.set('calendar_error', 'invalid_state');
     return NextResponse.redirect(home);
   }
@@ -90,7 +90,7 @@ export async function GET(request: NextRequest) {
       'X-TerpAI-Calendar-Secret': linkSecret,
     },
     body: JSON.stringify({
-      user_sub: session.user.sub,
+      user_sub: user.sub,
       refresh_token: tokenJson.refresh_token,
     }),
   });

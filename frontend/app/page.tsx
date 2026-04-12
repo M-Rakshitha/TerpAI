@@ -20,7 +20,7 @@ interface LiveStage {
   totalSteps?: number;
   activity?: string;
   lastUpdatedAt?: string;
-  steps: { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string }[];
+  steps: { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string; stepNumber?: number }[];
 }
 
 const AGENT_DESCRIPTIONS: Record<string, string> = {
@@ -34,6 +34,25 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   jobs_research: 'Gathering opportunities and outreach-ready details.',
   aggregator: 'Merging all agent results into a final report.',
 };
+
+function toAgentLabel(name: string) {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function computeStageProgress(status: string, currentStep?: number, totalSteps?: number) {
+  if (status === 'completed') return 100;
+  if (typeof currentStep === 'number' && typeof totalSteps === 'number' && totalSteps > 0) {
+    const safeStep = Math.max(0, Math.min(currentStep, totalSteps));
+    return Math.max(5, Math.min(98, Math.round((safeStep / totalSteps) * 100)));
+  }
+  if (status === 'running') return 18;
+  if (status === 'failed') return 100;
+  return 8;
+}
+
+function normalizeStageName(name: string) {
+  return name.trim().toLowerCase();
+}
 
 const LOCATION_INTENT_TERMS = [
   'near me',
@@ -265,16 +284,6 @@ export default function Home() {
     const type = event.type || '';
     const timestamp = event.timestamp || new Date().toISOString();
 
-    const inferProgress = (status: string, currentStep?: number, totalSteps?: number) => {
-      if (status === 'completed') return 100;
-      if (typeof currentStep === 'number' && typeof totalSteps === 'number' && totalSteps > 0) {
-        return Math.max(5, Math.min(98, Math.round((currentStep / totalSteps) * 100)));
-      }
-      if (status === 'running') return 18;
-      if (status === 'failed') return 100;
-      return 8;
-    };
-
     const toStageStatus = (status: string): string => {
       if (status === 'completed') return 'Completed';
       if (status === 'running' || status === 'retrying') return 'Running';
@@ -292,9 +301,10 @@ export default function Home() {
 
     if (type === 'planner_status') {
       const status = event.status || 'running';
-      setStatusLabel(status === 'completed' ? 'Planner completed' : eventText);
-      setStages((prev) =>
-        upsertStage(prev, {
+      setStatusLabel(status === 'completed' ? 'Planner completed' : 'Planning your request...');
+
+      setStages((prev) => {
+        let next = upsertStage(prev, {
           name: 'Task Planner',
           status: toStageStatus(status),
           description: AGENT_DESCRIPTIONS['Task Planner'],
@@ -302,7 +312,7 @@ export default function Home() {
           activity: eventText,
           currentStep: event.current_step,
           totalSteps: event.total_steps,
-          progress: inferProgress(status, event.current_step, event.total_steps),
+          progress: computeStageProgress(status, event.current_step, event.total_steps),
           lastUpdatedAt: timestamp,
           steps: [
             {
@@ -311,8 +321,53 @@ export default function Home() {
               message: eventText,
             },
           ],
-        }),
-      );
+        });
+
+        if (status === 'completed' && Array.isArray(event.tasks)) {
+          for (const task of event.tasks) {
+            if (typeof task !== 'string') continue;
+            const agentName = task.toLowerCase();
+            next = upsertStage(next, {
+              name: agentName,
+              status: 'Queued',
+              description: AGENT_DESCRIPTIONS[agentName] || 'Agent handling part of your query.',
+              detail: 'Queued and waiting to start.',
+              activity: 'Awaiting trigger',
+              currentStep: 0,
+              totalSteps: 0,
+              progress: 8,
+              lastUpdatedAt: timestamp,
+              steps: [
+                {
+                  title: 'Queued',
+                  status: 'queued',
+                  message: 'Waiting for execution slot.',
+                },
+              ],
+            });
+          }
+          next = upsertStage(next, {
+            name: 'Aggregator',
+            status: 'Queued',
+            description: AGENT_DESCRIPTIONS.aggregator,
+            detail: 'Queued until agent execution completes.',
+            activity: 'Awaiting agents',
+            currentStep: 0,
+            totalSteps: 0,
+            progress: 8,
+            lastUpdatedAt: timestamp,
+            steps: [
+              {
+                title: 'Queued',
+                status: 'queued',
+                message: 'Waiting for all active agents.',
+              },
+            ],
+          });
+        }
+
+        return next;
+      });
     }
 
     if (type === 'agent_status') {
@@ -320,9 +375,14 @@ export default function Home() {
       const status = event.status || 'queued';
       const stageStatus = toStageStatus(status);
 
-      setStatusLabel(`${agent}: ${eventText}`);
-      setStages((prev) =>
-        upsertStage(prev, {
+      setStatusLabel(
+        status === 'completed'
+          ? `${toAgentLabel(agent)} completed`
+          : `${toAgentLabel(agent)} is running...`,
+      );
+      setStages((prev) => {
+        const existing = prev.find((s) => s.name === agent);
+        return upsertStage(prev, {
           name: agent,
           status: stageStatus,
           description: AGENT_DESCRIPTIONS[agent] || 'Agent handling part of your query.',
@@ -330,18 +390,20 @@ export default function Home() {
           activity: eventText,
           currentStep: event.current_step,
           totalSteps: event.total_steps,
-          progress: inferProgress(status, event.current_step, event.total_steps),
+          progress: computeStageProgress(status, event.current_step, event.total_steps),
           lastUpdatedAt: timestamp,
-          completionMessage: status === 'completed' ? `${agent} finished successfully.` : undefined,
-          steps: [
-            {
-              title: event.subtask || event.work || 'Active task',
-              status: status === 'completed' ? 'completed' : status === 'running' ? 'running' : status === 'failed' ? 'failed' : 'queued',
-              message: eventText,
-            },
-          ],
-        }),
-      );
+          completionMessage: status === 'completed' ? event.completion_message || `${agent} finished successfully.` : existing?.completionMessage,
+          steps: existing?.steps?.length
+            ? existing.steps
+            : [
+                {
+                  title: event.subtask || event.work || 'Active task',
+                  status: status === 'completed' ? 'completed' : status === 'running' ? 'running' : status === 'failed' ? 'failed' : 'queued',
+                  message: eventText,
+                },
+              ],
+        });
+      });
     }
 
     if (type === 'agent_step') {
@@ -350,16 +412,47 @@ export default function Home() {
       const stageStatus = toStageStatus(status);
       const stepTitle = event.subtask || 'Working on task';
 
-      setStatusLabel(`${agent}: ${eventText}`);
+      setStatusLabel(
+        status === 'completed'
+          ? `${toAgentLabel(agent)} updated`
+          : `${toAgentLabel(agent)} is running...`,
+      );
       setStages((prev) => {
         const existing = prev.find((s) => s.name === agent);
         const nextSteps = existing?.steps ? [...existing.steps] : [];
+        const stepNumber = typeof event.step_index === 'number' ? event.step_index : undefined;
         const mappedStatus: 'running' | 'completed' | 'failed' | 'queued' =
           status === 'completed' ? 'completed' : status === 'failed' || status === 'timeout' ? 'failed' : 'running';
-        nextSteps.push({
-          title: stepTitle,
-          status: mappedStatus,
-          message: eventText,
+
+        const existingStepIndex = nextSteps.findIndex((step) => {
+          if (stepNumber !== undefined && step.stepNumber === stepNumber) return true;
+          return step.title === stepTitle;
+        });
+
+        if (existingStepIndex >= 0) {
+          nextSteps[existingStepIndex] = {
+            ...nextSteps[existingStepIndex],
+            title: stepTitle,
+            status: mappedStatus,
+            message: eventText,
+            stepNumber,
+          };
+        } else {
+          nextSteps.push({
+            title: stepTitle,
+            status: mappedStatus,
+            message: eventText,
+            stepNumber,
+          });
+        }
+
+        nextSteps.sort((a, b) => {
+          if (typeof a.stepNumber === 'number' && typeof b.stepNumber === 'number') {
+            return a.stepNumber - b.stepNumber;
+          }
+          if (typeof a.stepNumber === 'number') return -1;
+          if (typeof b.stepNumber === 'number') return 1;
+          return 0;
         });
 
         return upsertStage(prev, {
@@ -370,10 +463,10 @@ export default function Home() {
           activity: stepTitle,
           currentStep: event.step_index || event.current_step,
           totalSteps: event.total_steps,
-          progress: inferProgress(status, event.step_index || event.current_step, event.total_steps),
+          progress: computeStageProgress(status, event.step_index || event.current_step, event.total_steps),
           lastUpdatedAt: timestamp,
           completionMessage: status === 'completed' ? event.message : existing?.completionMessage,
-          steps: nextSteps.slice(-10),
+          steps: nextSteps,
         });
       });
     }
@@ -390,7 +483,7 @@ export default function Home() {
           activity: eventText,
           currentStep: event.current_step,
           totalSteps: event.total_steps,
-          progress: inferProgress(status, event.current_step, event.total_steps),
+          progress: computeStageProgress(status, event.current_step, event.total_steps),
           lastUpdatedAt: timestamp,
           steps: [
             {
@@ -415,10 +508,35 @@ export default function Home() {
   };
 
   const upsertStage = (prev: LiveStage[], updated: LiveStage): LiveStage[] => {
-    const index = prev.findIndex((s) => s.name === updated.name);
+    const updatedKey = normalizeStageName(updated.name);
+    const index = prev.findIndex((s) => normalizeStageName(s.name) === updatedKey);
     if (index === -1) return [...prev, updated];
+
     const next = [...prev];
-    next[index] = { ...next[index], ...updated };
+    const existing = next[index];
+    const initialTotalSteps =
+      typeof existing.totalSteps === 'number' && existing.totalSteps > 0
+        ? existing.totalSteps
+        : typeof updated.totalSteps === 'number' && updated.totalSteps > 0
+          ? updated.totalSteps
+          : updated.totalSteps;
+    const mergedCurrentStep = typeof updated.currentStep === 'number' ? updated.currentStep : existing.currentStep;
+    const boundedCurrentStep =
+      typeof mergedCurrentStep === 'number' && typeof initialTotalSteps === 'number' && initialTotalSteps > 0
+        ? Math.min(mergedCurrentStep, initialTotalSteps)
+        : mergedCurrentStep;
+
+    const merged: LiveStage = {
+      ...existing,
+      ...updated,
+      totalSteps: initialTotalSteps,
+      currentStep: boundedCurrentStep,
+      steps: updated.steps && updated.steps.length > 0 ? updated.steps : existing.steps,
+    };
+
+    const normalizedStatus = String(updated.status || existing.status || '').toLowerCase();
+    merged.progress = computeStageProgress(normalizedStatus, merged.currentStep, merged.totalSteps);
+    next[index] = merged;
     return next;
   };
 

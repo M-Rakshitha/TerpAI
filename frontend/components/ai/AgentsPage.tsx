@@ -13,7 +13,7 @@ interface LiveStage {
   totalSteps?: number
   activity?: string
   lastUpdatedAt?: string
-  steps: { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string }[]
+  steps: { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string; stepNumber?: number }[]
 }
 
 interface AgentsPageProps {
@@ -26,32 +26,52 @@ interface AgentsPageProps {
 }
 
 const agentColors: Record<string, string> = {
-  Initializing: 'bg-[#FEF3C7] text-[#92400E]',
-  Running: 'bg-[#DDEBF9] text-[#1D4ED8]',
+  Initializing: 'bg-[#FEF3C7] text-[#7A5A00]',
+  Running: 'bg-[#DBEAFE] text-[#1D4ED8]',
   Waiting: 'bg-[#E5E7EB] text-[#374151]',
-  Completed: 'bg-[#DCFCE7] text-[#166534]',
+  Completed: 'bg-[#DCFCE7] text-[#15803D]',
   Attention: 'bg-[#FEE2E2] text-[#991B1B]',
   Queued: 'bg-[#E5E7EB] text-[#374151]',
 }
 
 export default function AgentsPage({ query, stages, response, onRevealSummary, onReset, statusLabel }: AgentsPageProps) {
-  const visibleStages = stages.filter((stage) => ['Queued', 'Running', 'Completed', 'Attention'].includes(stage.status))
-  const summaryTitle = response?.presentation?.summary?.title || 'TerpAI completed the workflow and returned the result below.'
-  const workflowComplete = Boolean(response) && !response?.awaiting_user_input && !statusLabel?.toLowerCase().includes('error')
+  const visibleStages = stages
+    .filter((stage) => {
+      if (!['Queued', 'Running', 'Completed', 'Attention'].includes(stage.status)) return false
+      if (stage.name.trim().toLowerCase() === 'aggregator' && stage.status === 'Queued') return false
+      return true
+    })
+    .reduce<LiveStage[]>((acc, stage) => {
+      const key = stage.name.trim().toLowerCase()
+      const existingIndex = acc.findIndex((item) => item.name.trim().toLowerCase() === key)
+      if (existingIndex === -1) {
+        acc.push(stage)
+        return acc
+      }
 
-  const stepBadgeClass = (status: 'running' | 'completed' | 'failed' | 'queued') => {
-    if (status === 'completed') return 'bg-[#DCFCE7] text-[#166534]'
-    if (status === 'running') return 'bg-[#DBEAFE] text-[#1D4ED8]'
-    if (status === 'failed') return 'bg-[#FEE2E2] text-[#991B1B]'
-    return 'bg-[#E5E7EB] text-[#374151]'
-  }
+      const existing = acc[existingIndex]
+      const existingTs = existing.lastUpdatedAt ? Date.parse(existing.lastUpdatedAt) : 0
+      const currentTs = stage.lastUpdatedAt ? Date.parse(stage.lastUpdatedAt) : 0
+      if (currentTs >= existingTs) {
+        acc[existingIndex] = stage
+      }
+      return acc
+    }, [])
 
-  const normalizeStepLabel = (status: 'running' | 'completed' | 'failed' | 'queued') => {
-    if (status === 'running') return 'Running'
-    if (status === 'completed') return 'Completed'
-    if (status === 'failed') return 'Needs attention'
-    return 'Queued'
-  }
+  const activatedAgents = Array.from(new Set(visibleStages
+    .filter((stage) => !['Task Planner', 'Aggregator'].includes(stage.name))
+    .map((stage) => stage.name.trim().toLowerCase())))
+  const summaryTitle = response?.presentation?.summary?.title || 'CampusPilot completed the workflow and returned the result below.'
+  const workflowComplete =
+    Boolean(response) &&
+    !response?.awaiting_user_input &&
+    !statusLabel?.toLowerCase().includes('error') &&
+    visibleStages.length > 0 &&
+    visibleStages.every((stage) => stage.status === 'Completed')
+  const runningCount = visibleStages.filter((stage) => stage.status === 'Running').length
+  const queuedCount = visibleStages.filter((stage) => stage.status === 'Queued').length
+  const completedCount = visibleStages.filter((stage) => stage.status === 'Completed').length
+  const attentionCount = visibleStages.filter((stage) => stage.status === 'Attention').length
 
   const stageProgress = (stage: LiveStage) => {
     if (typeof stage.progress === 'number') {
@@ -63,20 +83,40 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
     return 8
   }
 
+  const formatStageStepIndex = (stage: LiveStage) => {
+    if (typeof stage.currentStep !== 'number' || typeof stage.totalSteps !== 'number' || stage.totalSteps <= 0) {
+      return null
+    }
+
+    return `Step ${Math.min(Math.max(stage.currentStep, 1), stage.totalSteps)} of ${stage.totalSteps}`
+  }
+
+  const progressSegments = (stage: LiveStage, segments = 6) => {
+    const progress = stageProgress(stage)
+    const activeCount = Math.max(1, Math.round((progress / 100) * segments))
+    return Array.from({ length: segments }, (_, idx) => idx < activeCount)
+  }
+
   const agentPill = (name: string) =>
     name
       .replace(/_/g, ' ')
       .replace(/\b\w/g, (char) => char.toUpperCase())
 
-  const pickCurrentStep = (stage: LiveStage): { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string } | null => {
+  const pickCurrentStep = (stage: LiveStage): { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string; stepNumber?: number } | null => {
     if (!stage.steps || stage.steps.length === 0) return null
 
+    const currentStepNumber = typeof stage.currentStep === 'number' ? stage.currentStep : undefined
+
     if (stage.status === 'Completed') {
-      const last = [...stage.steps].reverse().find((step) => step.status === 'completed') || stage.steps[stage.steps.length - 1]
+      const last =
+        (currentStepNumber !== undefined && stage.steps.find((step) => step.stepNumber === currentStepNumber && step.status === 'completed')) ||
+        [...stage.steps].reverse().find((step) => step.status === 'completed') ||
+        stage.steps[stage.steps.length - 1]
       return {
         title: last.title,
         status: 'completed',
         message: stage.completionMessage || stage.detail || 'All steps completed.',
+        stepNumber: last.stepNumber,
       }
     }
 
@@ -85,10 +125,29 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
     }
 
     return (
+      (currentStepNumber !== undefined && stage.steps.find((step) => step.stepNumber === currentStepNumber)) ||
       stage.steps.find((step) => step.status === 'running') ||
       stage.steps.find((step) => step.status === 'queued') ||
       stage.steps[stage.steps.length - 1]
     )
+  }
+
+  const stageHeadline = (stage: LiveStage) => {
+    const currentStep = pickCurrentStep(stage)
+    if (currentStep) {
+      const stepIndex = currentStep.stepNumber ? `Step ${currentStep.stepNumber}` : formatStageStepIndex(stage)
+      const title = stepIndex ? `${stepIndex} · ${currentStep.title}` : currentStep.title
+      if (stage.status === 'Running' || stage.status === 'Queued') {
+        return currentStep.message ? `${title} · ${currentStep.message}` : title
+      }
+      if (stage.status === 'Completed') {
+        return currentStep.message || stage.completionMessage || 'Workflow completed successfully.'
+      }
+      return currentStep.message ? `${title} · ${currentStep.message}` : title
+    }
+    if (stage.detail) return stage.detail
+    if (stage.status === 'Completed') return stage.completionMessage || 'Workflow completed successfully.'
+    return 'Waiting for live update...'
   }
 
   return (
@@ -107,14 +166,14 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-3">
               <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Agent launch pad</p>
-              <h2 className="text-4xl font-black text-white">Campus AI agents are running</h2>
+              <h2 className="text-4xl font-bold text-white">CampusPilot agents are running</h2>
               <p className="max-w-2xl text-base leading-7 text-gray-300">
                 The task planner runs first, then only the selected agents appear here, and finally the aggregator completes the response.
               </p>
             </div>
             <div className="rounded-3xl border border-[#FFB81C]/20 bg-[#111827] px-6 py-5 text-white shadow-xl shadow-black/30">
               <p className="text-sm uppercase tracking-[0.3em]">Current query</p>
-              <p className="mt-4 text-xl font-semibold">{query}</p>
+              <p className="mt-4 text-xl font-semibold text-[#FDE68A]">{query}</p>
               {statusLabel && <p className="mt-2 text-sm text-white/90">{statusLabel}</p>}
             </div>
           </div>
@@ -124,75 +183,83 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
           <div className="rounded-[32px] border border-[#E31937]/20 bg-[#1a1a1a]/90 p-6 shadow-2xl shadow-black/20">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Live workflow</p>
-                <h3 className="mt-2 text-2xl font-bold text-white">Task planner first, selected agents second, aggregator last</h3>
+                <p className="text-sm uppercase tracking-[0.3em] text-[#FFD200]">Live workflow</p>
+                <h3 className="mt-2 text-2xl font-bold text-white">From intent to answers, in one continuous stream</h3>
                 <p className="mt-2 text-sm text-gray-300">
-                  Each card updates as live websocket events arrive from the backend.
+                  We orchestrate planning, parallel agent execution, and final synthesis with real-time updates.
                 </p>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-[#111827] px-4 py-3 text-sm text-gray-300">
-                {visibleStages.length} live stage{visibleStages.length === 1 ? '' : 's'} visible
+              <div className="rounded-2xl border border-white/10 bg-[#111827] px-4 py-3 text-xs uppercase tracking-[0.18em] text-gray-300">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#2563EB]" />{runningCount} running</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#9CA3AF]" />{queuedCount} queued</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#16A34A]" />{completedCount} done</span>
+                  {attentionCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#DC2626]" />{attentionCount} attention</span>}
+                </div>
               </div>
             </div>
 
             <div className="mt-6 space-y-4">
+              {activatedAgents.length > 0 && (
+                <div className="rounded-2xl border border-white/10 bg-[#0f0f0f] p-4">
+                  <p className="text-xs uppercase tracking-[0.25em] text-[#FFD200]">Triggered agents</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {activatedAgents.map((agent) => {
+                      const stage = visibleStages.find((item) => item.name.trim().toLowerCase() === agent)
+                      const running = stage?.status === 'Running'
+                      const completed = stage?.status === 'Completed'
+                      return (
+                        <span
+                          key={agent}
+                          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#111827] px-3 py-1 text-xs font-semibold text-gray-200"
+                        >
+                          <span className={`h-2 w-2 rounded-full ${running ? 'animate-pulse bg-[#2563EB]' : completed ? 'bg-[#16A34A]' : stage?.status === 'Attention' ? 'bg-[#DC2626]' : 'bg-[#9CA3AF]'}`} />
+                          {agentPill(agent)}
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
               {visibleStages.map((stage) => (
                 <div key={stage.name} className="rounded-[28px] border border-[#FFB81C]/15 bg-[#111827] p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.3em] text-[#FFB81C]">{agentPill(stage.name)}</p>
+                      <p className="text-xs uppercase tracking-[0.3em] text-[#FFD200]">{agentPill(stage.name)}</p>
                       <p className="mt-2 text-lg font-semibold text-white">{stage.description}</p>
-                      <p className="mt-2 text-sm text-gray-300">{stage.status === 'Completed' ? stage.completionMessage || stage.detail || 'Completed.' : stage.detail || 'Waiting for live update...'}</p>
+                      {stage.status !== 'Completed' && (
+                        <p className="mt-2 text-sm font-medium text-[#DBEAFE]">Running step</p>
+                      )}
+                      <p className={`${stage.status === 'Completed' ? 'mt-2' : 'mt-1'} text-sm text-gray-300`}>
+                        {stageHeadline(stage)}
+                      </p>
                     </div>
-                    <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-semibold ${agentColors[stage.status] || agentColors.Waiting}`}>
+                    <span className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ${agentColors[stage.status] || agentColors.Waiting}`}>
+                      {stage.status === 'Running' && <span className="h-2 w-2 animate-pulse rounded-full bg-[#2563EB]" />}
+                      {stage.status === 'Completed' && <span className="h-2 w-2 rounded-full bg-[#16A34A]" />}
                       {stage.status}
                     </span>
                   </div>
 
-                  {(() => {
-                    const currentStep = pickCurrentStep(stage)
-                    const currentStepIndex = currentStep ? Math.max(0, stage.steps.findIndex((step) => step.title === currentStep.title && step.status === currentStep.status)) : -1
-                    return (
-                      <div className="mt-4 rounded-2xl border border-white/10 bg-[#1a1a1a] p-4">
-                        {currentStep ? (
-                          <div className="rounded-xl bg-[#0f0f0f] px-3 py-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="text-sm font-semibold text-white">{stage.activity || currentStep.title}</p>
-                              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${stepBadgeClass(currentStep.status)}`}>
-                                {normalizeStepLabel(currentStep.status)}
-                              </span>
-                            </div>
-                            <p className="mt-2 text-xs leading-6 text-gray-300">{currentStep.message}</p>
-                          </div>
-                        ) : (
-                          <div className="rounded-xl bg-[#0f0f0f] px-3 py-3">
-                            <p className="text-sm font-semibold text-white">No step details available yet.</p>
-                          </div>
-                        )}
+                  <div className="mt-4">
+                    <div className="rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        {progressSegments(stage).map((active, idx) => (
+                          <span
+                            key={`${stage.name}-segment-${idx}`}
+                            className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${
+                              active
+                                ? stage.status === 'Attention'
+                                  ? 'bg-[#DC2626]'
+                                  : stage.status === 'Completed'
+                                    ? 'bg-[#16A34A]'
+                                    : 'animate-pulse bg-[#2563EB]'
+                                : 'bg-white/10'
+                            }`}
+                          />
+                        ))}
                       </div>
-                    )
-                  })()}
-
-                  <div className="mt-4 space-y-2">
-                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
-                      <div
-                        className={`h-full rounded-full transition-all duration-700 ${
-                          stage.status === 'Completed'
-                            ? 'bg-[#16A34A]'
-                            : stage.status === 'Running'
-                              ? 'bg-[#2563EB]'
-                              : stage.status === 'Attention'
-                                ? 'bg-[#DC2626]'
-                                : 'bg-[#9CA3AF]'
-                        }`}
-                        style={{ width: `${stageProgress(stage)}%` }}
-                      />
-                    </div>
-                    <div
-                      className="flex items-center justify-between rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-[11px] uppercase tracking-[0.2em] text-gray-400"
-                    >
-                      <span>{stage.status === 'Running' ? 'Live stream' : 'Stage state'}</span>
-                      <span>{stage.currentStep && stage.totalSteps ? `${stage.currentStep}/${stage.totalSteps}` : `${Math.round(stageProgress(stage))}%`}</span>
                     </div>
                   </div>
                 </div>
@@ -200,22 +267,22 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
             </div>
           </div>
 
-          <div className="rounded-[32px] border border-[#E31937]/20 bg-[#1a1a1a]/90 p-6 shadow-2xl shadow-black/20">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Aggregator summary</p>
-                <h3 className="mt-2 text-2xl font-bold text-white">{summaryTitle}</h3>
-              </div>
-              {workflowComplete && (
+          {workflowComplete && (
+            <div className="rounded-[32px] border border-[#E31937]/20 bg-[#1a1a1a]/90 p-6 shadow-2xl shadow-black/20">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Aggregator summary</p>
+                  <h3 className="mt-2 text-2xl font-bold text-white">{summaryTitle}</h3>
+                </div>
                 <button
                   onClick={onRevealSummary}
-                  className="inline-flex items-center justify-center rounded-[28px] bg-gradient-to-r from-[#E31937] via-[#FFB81C] to-[#E31937] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-red-500/20 transition hover:scale-[1.02]"
+                  className="inline-flex items-center justify-center rounded-[28px] border border-[#F59E0B]/40 bg-[#111827] px-6 py-3 text-sm font-semibold text-[#FDE68A] shadow-lg shadow-black/30 transition hover:border-[#FBBF24] hover:bg-[#1f2937] hover:text-[#FEF3C7]"
                 >
-                  Open final report
+                  View polished report
                 </button>
-              )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

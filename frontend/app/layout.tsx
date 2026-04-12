@@ -5,8 +5,8 @@ import { AppProviders } from '@/components/AppProviders'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'TerpAI',
-  description: 'AI Assistant for UMD Students',
+  title: 'CampusPilot',
+  description: 'Campus AI assistant for UMD students',
 }
 
 export default function RootLayout({

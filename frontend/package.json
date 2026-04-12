@@ -1,0 +1,41 @@
+{
+  "name": "terpai",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('.next', { recursive: true, force: true })\"",
+    "dev": "next dev",
+    "prebuild": "npm run clean",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@auth0/nextjs-auth0": "^1.8.0",
+    "@radix-ui/react-slot": "^1.1.2",
+    "@radix-ui/react-tabs": "^1.1.12",
+    "@react-google-maps/api": "^2.20.8",
+    "axios": "^0.21.4",
+    "clsx": "^2.1.1",
+    "class-variance-authority": "^0.7.1",
+    "framer-motion": "^4.1.17",
+    "date-fns": "^3.6.0",
+    "next": "14.0.0",
+    "plotly.js": "^2.5.1",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "recharts": "^2.15.4",
+    "tailwind-merge": "^2.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^7.32.0",
+    "eslint-config-next": "^12.0.7",
+    "postcss": "^8.5.9",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^4.5.4"
+  }
+}

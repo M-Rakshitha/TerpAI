@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
-import { getSession } from '@auth0/nextjs-auth0';
+import { NextRequest } from 'next/server';
 
 import { isAuth0EnvConfigured } from '@/lib/auth0-env';
+import { getAuthUserFromRequest } from '@/lib/auth-user';
 import { getBackendBaseUrl } from '@/lib/backend-server';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   if (!isAuth0EnvConfigured()) {
     return NextResponse.json({
       authenticated: false,
@@ -16,8 +17,8 @@ export async function GET() {
     });
   }
 
-  const session = await getSession();
-  if (!session?.user?.sub) {
+  const user = await getAuthUserFromRequest(request);
+  if (!user?.sub) {
     return NextResponse.json({ authenticated: false, connected: false });
   }
 
@@ -28,7 +29,7 @@ export async function GET() {
 
   const backend = getBackendBaseUrl();
   const url = new URL(`${backend}/api/integrations/google-calendar/status/link`);
-  url.searchParams.set('user_sub', session.user.sub);
+  url.searchParams.set('user_sub', user.sub);
 
   const res = await fetch(url.toString(), {
     headers: { 'X-TerpAI-Calendar-Secret': linkSecret },
