@@ -18,6 +18,16 @@ You are responsible for everything that runs on the server: the FastAPI backend,
 - **Deployment**: Railway or Render (backend), environment variables via `.env`
 - **Package manager**: pip + `requirements.txt`
 
+## Current implementation notes
+
+- The backend now supports live query streaming over websocket events as well as the HTTP query path.
+- Gemini usage is globally rate-limited in the shared client path; keep total Gemini traffic under the configured cap instead of adding per-agent ad hoc throttles.
+- The agent router now preserves failure semantics correctly: failed agents stay failed, and step results should not be marked completed when the final payload errored.
+- Dining is intentionally real-data-first. It uses live campus/off-campus/web sources, but in strict live mode it should prefer faster live paths over expensive web enrichment that can time out.
+- Dining location parsing now recognizes prompts like "near", "around", "at", and "by", not just "from".
+- If live campus sources fail in non-strict mode, the dining agent can fall back to known UMD halls instead of returning an empty result.
+- When adding new AI or network calls, prefer the shared retry/rate-limit utilities and keep agent responses graceful under timeout or provider failure.
+
 ---
 
 ## Folder structure

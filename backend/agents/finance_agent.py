@@ -35,6 +35,7 @@ TIMEFRAME_MULTIPLIERS = {
     "weekly": 1.0,
     "monthly": 4.0,
     "semester": 16.0,
+    "per_meal": 1.0,
 }
 
 
@@ -62,6 +63,10 @@ def _extract_budget(text: str) -> float | None:
 
 def _extract_timeframe(text: str) -> str:
     lowered = text.lower()
+    meal_intent = any(token in lowered for token in ["dinner", "lunch", "breakfast", "meal", "eat", "restaurant", "food"])
+    planning_intent = any(token in lowered for token in ["weekly", "monthly", "semester", "budget plan", "spending plan", "track"])
+    if meal_intent and not planning_intent:
+        return "per_meal"
     if "daily" in lowered or "today" in lowered:
         return "daily"
     if "month" in lowered or "monthly" in lowered:
@@ -163,6 +168,10 @@ def _estimate_category_cost(category: str, references: list[dict[str, Any]], tim
     else:
         base = DEFAULT_CATEGORY_BASELINES.get(category, 30.0)
 
+    if timeframe == "per_meal":
+        meal_base = base if price_points else max(6.0, base / 6.0)
+        return round(meal_base, 2)
+
     multiplier = TIMEFRAME_MULTIPLIERS.get(timeframe, 1.0)
     return round(base * multiplier, 2)
 
@@ -234,15 +243,16 @@ def _build_spending_plan(
 
 
 def _build_suggestion(plan: list[dict[str, Any]], budget: float | None, estimated_total: float, timeframe: str) -> str:
+    timeframe_text = "per meal" if timeframe == "per_meal" else timeframe
     over_categories = [item["category"] for item in plan if not item.get("within_allocation", True)]
     if budget is None:
         return (
-            f"Estimated {timeframe} spend is about ${estimated_total:.2f}. "
+            f"Estimated {timeframe_text} spend is about ${estimated_total:.2f}. "
             "Share a target budget to get a tighter allocation plan."
         )
     if not over_categories:
         return (
-            f"Your ${budget:.2f} {timeframe} budget is feasible based on current web price signals. "
+            f"Your ${budget:.2f} {timeframe_text} budget is feasible based on current web price signals. "
             "Track actual spend mid-cycle and re-balance if needed."
         )
     categories_text = ", ".join(over_categories)
@@ -282,7 +292,7 @@ async def _generate_ai_budget_strategy(
 
 
 async def run(context: dict) -> dict:
-    user_message = str(context.get("user_message") or context.get("enriched_query") or "")
+    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "")
     combined_text = " ".join(
         part
         for part in [
@@ -315,29 +325,6 @@ async def run(context: dict) -> dict:
     )
 
     all_reference_count = sum(len(values) for values in web_references.values())
-
-    if strict_live_mode_enabled() and all_reference_count == 0:
-        return {
-            "agent": "finance",
-            "weekly_spent": round(weekly_spent, 2),
-            "budget_remaining": round(max(0.0, (budget or 0.0)), 2),
-            "timeframe": timeframe,
-            "categories": categories,
-            "budget": budget,
-            "estimated_total": None,
-            "spending_plan": [],
-            "web_references": web_references,
-            "data_sources": {
-                "web_search_used": False,
-                "search_provider": "duckduckgo_html",
-                "total_reference_hits": 0,
-            },
-            "error": "No live web cost references available for this query",
-            "suggestion": "Try adding more specific categories or retry when web sources are reachable.",
-            "follow_up_questions": [
-                "Should I narrow this to one category (for example dining only) for better search accuracy?",
-            ],
-        }
 
     ai_strategy: str | None = None
     ai_error: str | None = None

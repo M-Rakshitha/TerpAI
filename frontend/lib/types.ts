@@ -10,6 +10,75 @@ export interface QueryResponse {
     study_resources: StudyResourcesResult | null;
     jobs_research: JobsResearchResult | null;
   };
+  presentation?: QueryPresentation | null;
+  agent_execution?: QueryExecution | null;
+  agent_outputs?: Record<string, unknown> | null;
+}
+
+export interface QueryPresentation {
+  layout?: string;
+  summary?: QuerySummary;
+  sections?: QuerySection[];
+  quick_actions?: QueryQuickAction[];
+}
+
+export interface QuerySummary {
+  title?: string;
+  query?: string;
+  active_agents?: string[];
+  highlights?: string[];
+}
+
+export interface QuerySection {
+  id?: string;
+  title?: string;
+  agent?: string;
+  style?: string;
+  items?: unknown[];
+  meta?: Record<string, unknown>;
+}
+
+export interface QueryQuickAction {
+  label?: string;
+  agent?: string;
+  action?: string;
+  target?: string;
+}
+
+export interface QueryExecution {
+  active_agents?: string[];
+  timeline?: QueryTimelineEvent[];
+}
+
+export interface QueryTimelineEvent {
+  type?: string;
+  agent?: string;
+  status?: string;
+  timestamp?: string;
+  request_id?: string;
+  message?: string;
+  detail?: string;
+  reason?: string;
+  error?: string;
+  elapsed_ms?: number;
+  tasks?: string[];
+  work?: string;
+  ai_output_preview?: string;
+  payload?: unknown;
+  context_snapshot?: Record<string, unknown>;
+  current_step?: number;
+  total_steps?: number;
+  completion_message?: string;
+  step_index?: number;
+  subtask?: string;
+}
+
+export interface AgentStepResult {
+  step?: string;
+  subtask?: string;
+  status?: string;
+  message?: string;
+  evidence_keys?: string[];
 }
 
 export interface ScheduleResult {

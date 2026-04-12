@@ -60,6 +60,7 @@ def _is_vague_location_query(message: str) -> bool:
 
 def _extract_text_context(context: dict[str, Any]) -> str:
     parts = [
+        context.get("agent_prompt"),
         context.get("user_message"),
         context.get("query"),
         context.get("destination"),
@@ -69,6 +70,16 @@ def _extract_text_context(context: dict[str, Any]) -> str:
         context.get("target"),
     ]
     return " ".join(str(part) for part in parts if isinstance(part, str) and part.strip())
+
+
+def _extract_origin_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(r"\bfrom\b\s+([a-zA-Z0-9][a-zA-Z0-9 .'-]{1,80})", text, re.IGNORECASE)
+    if not match:
+        return None
+    origin = match.group(1).strip(" .,")
+    return origin or None
 
 
 def _map_request(function_to_call: str, payload: str = "") -> requests.Response:
@@ -118,8 +129,11 @@ def _fetch_map_suggestions(query: str) -> list[str]:
     if not query.strip():
         return []
 
-    response = _map_request("getSuggestionsList", json.dumps({"input": query}))
-    response.raise_for_status()
+    try:
+        response = _map_request("getSuggestionsList", json.dumps({"input": query}))
+        response.raise_for_status()
+    except Exception:
+        return []
     try:
         payload = response.json()
     except Exception:
@@ -141,7 +155,10 @@ def _find_building_match(query: str) -> dict[str, Any] | None:
     if not normalized_query:
         return None
 
-    buildings = _fetch_map_buildings()
+    try:
+        buildings = _fetch_map_buildings()
+    except Exception:
+        return None
 
     for building in buildings:
         if normalized_query == building["search_text"]:
@@ -212,7 +229,16 @@ def _resolve_destination(context: dict[str, Any]) -> tuple[str, dict[str, Any], 
 
 
 def _resolve_origin(context: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    candidates = [context.get("origin"), context.get("start"), context.get("from"), context.get("current_location"), context.get("user_location")]
+    extracted_origin = _extract_origin_from_text(_extract_text_context(context))
+    candidates = [
+        context.get("origin"),
+        context.get("start"),
+        context.get("from"),
+        context.get("current_location"),
+        context.get("user_location"),
+        context.get("location_mentioned"),
+        extracted_origin,
+    ]
     origin = next((str(candidate).strip() for candidate in candidates if isinstance(candidate, str) and candidate.strip()), DEFAULT_ORIGIN)
     match = _find_building_match(origin)
     if match:

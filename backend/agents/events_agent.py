@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from datetime import datetime, timedelta
@@ -120,6 +121,8 @@ class EventsState(TypedDict, total=False):
     free_food_only: bool
     campus_events: list[dict[str, Any]]
     nearby_events: list[dict[str, Any]]
+    campus_failures: int
+    nearby_failures: int
     ranked_events: list[dict[str, Any]]
     registration_links: dict[str, str]
     needs_user_input: bool
@@ -315,26 +318,7 @@ def _fetch_live_campus_events() -> list[dict[str, Any]]:
     except Exception:
         pass
 
-    # Fallback to known events (disabled in strict live mode)
-    if strict_live_mode_enabled():
-        return []
-
-    events = []
-    for name, details in KNOWN_UMD_EVENTS.items():
-        event_date = datetime.now() + timedelta(days=details.get("date_offset_days", 0))
-        events.append(
-            {
-                "name": name,
-                "date": event_date.strftime("%Y-%m-%d"),
-                "time": details["time"],
-                "location": details["location"],
-                "url": "",
-                "tags": details["tags"],
-                "free_food": details["free_food"],
-                "category": details["category"],
-            }
-        )
-    return events
+    return []
 
 
 def _query_eventbrite_nearby() -> list[dict[str, Any]]:
@@ -402,34 +386,23 @@ def _node_ingest_context(state: EventsState) -> EventsState:
 def _node_fetch_campus_events(state: EventsState) -> EventsState:
     try:
         events = _fetch_live_campus_events()
+        failures = 0 if events else 1
     except Exception:
-        if strict_live_mode_enabled():
-            events = []
-        else:
-            events = [
-                {
-                    "name": event_name,
-                    "date": (datetime.now() + timedelta(days=details["date_offset_days"])).strftime("%Y-%m-%d"),
-                    "time": details["time"],
-                    "location": details["location"],
-                    "url": "",
-                    "tags": details["tags"],
-                    "free_food": details["free_food"],
-                    "category": details["category"],
-                }
-                for event_name, details in KNOWN_UMD_EVENTS.items()
-            ]
+        events = []
+        failures = 1
 
-    return {"campus_events": events}
+    return {"campus_events": events, "campus_failures": failures}
 
 
 def _node_fetch_nearby_events(state: EventsState) -> EventsState:
     try:
         nearby = _query_eventbrite_nearby()
+        failures = 0 if nearby else 1
     except Exception:
         nearby = []
+        failures = 1
 
-    return {"nearby_events": nearby}
+    return {"nearby_events": nearby, "nearby_failures": failures}
 
 
 def _node_rank_events(state: EventsState) -> EventsState:
@@ -440,20 +413,6 @@ def _node_rank_events(state: EventsState) -> EventsState:
     free_food_only = state.get("free_food_only", False)
 
     combined = state.get("campus_events", []) + state.get("nearby_events", [])
-    if not combined and not strict_live_mode_enabled():
-        combined = [
-            {
-                "name": event_name,
-                "date": (datetime.now() + timedelta(days=details["date_offset_days"])).strftime("%Y-%m-%d"),
-                "time": details["time"],
-                "location": details["location"],
-                "url": "",
-                "tags": details["tags"],
-                "free_food": details["free_food"],
-                "category": details["category"],
-            }
-            for event_name, details in KNOWN_UMD_EVENTS.items()
-        ]
 
     def _score(event: dict[str, Any]) -> float:
         score = 0.0
@@ -524,20 +483,6 @@ def _node_build_registration_links(state: EventsState) -> EventsState:
 
 def _node_build_result(state: EventsState) -> EventsState:
     ranked = state.get("ranked_events", [])
-    if not ranked and not strict_live_mode_enabled():
-        ranked = [
-            {
-                "name": event_name,
-                "date": (datetime.now() + timedelta(days=details["date_offset_days"])).strftime("%Y-%m-%d"),
-                "time": details["time"],
-                "location": details["location"],
-                "url": "",
-                "tags": details["tags"],
-                "free_food": details["free_food"],
-                "category": details["category"],
-            }
-            for event_name, details in KNOWN_UMD_EVENTS.items()
-        ]
 
     options = [
         {
@@ -642,8 +587,68 @@ async def _generate_ai_event_summary(user_message: str, result: dict[str, Any]) 
     return await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 4)
 
 
+async def _generate_gemini_event_options(
+    user_message: str,
+    categories: list[str],
+    date_preference: str | None,
+) -> list[dict[str, Any]]:
+    prompt = (
+        "You are a UMD events assistant using web knowledge. "
+        "Return ONLY valid JSON as an array of 3 to 5 event objects with keys: "
+        "name, date (YYYY-MM-DD), time, location, tags (array), free_food (boolean), category.\n\n"
+        f"User query: {user_message}\n"
+        f"Categories: {categories}\n"
+        f"Date preference: {date_preference or 'not specified'}\n"
+    )
+    raw = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 10)
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+
+    try:
+        payload = json.loads(cleaned)
+    except Exception:
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        try:
+            payload = json.loads(cleaned[start : end + 1])
+        except Exception:
+            return []
+
+    if not isinstance(payload, list):
+        return []
+
+    options: list[dict[str, Any]] = []
+    for item in payload[:5]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        options.append(
+            {
+                "name": name,
+                "date": str(item.get("date", datetime.now().strftime("%Y-%m-%d"))),
+                "time": str(item.get("time", "TBA")),
+                "location": str(item.get("location", "University of Maryland")),
+                "tags": [str(tag) for tag in item.get("tags", []) if str(tag).strip()],
+                "free_food": bool(item.get("free_food", False)),
+                "category": str(item.get("category", "campus")),
+            }
+        )
+    return options
+
+
 async def run(context: dict) -> dict:
-    initial_state: EventsState = {"context": context}
+    effective_context = dict(context)
+    if isinstance(effective_context.get("agent_prompt"), str) and effective_context.get("agent_prompt"):
+        effective_context["user_message"] = effective_context["agent_prompt"]
+
+    initial_state: EventsState = {"context": effective_context}
 
     try:
         if EVENTS_GRAPH is not None:
@@ -654,7 +659,7 @@ async def run(context: dict) -> dict:
         result = final_state.get("result") if isinstance(final_state, dict) else None
         if isinstance(result, dict) and result.get("agent") == "events" and result.get("options"):
             try:
-                ai_text = await _generate_ai_event_summary(str(context.get("user_message", "")), result)
+                ai_text = await _generate_ai_event_summary(str(effective_context.get("user_message", "")), result)
                 result["ai_recommendation"] = ai_text.strip()
                 result.setdefault("data_sources", {})["gemini_used"] = True
             except (GeminiClientError, Exception) as exc:
@@ -662,37 +667,44 @@ async def run(context: dict) -> dict:
                 if strict_live_mode_enabled():
                     result["error"] = f"Events AI recommendation failed: {type(exc).__name__}: {exc}"
             return result
+
+        if isinstance(final_state, dict) and isinstance(result, dict) and result.get("agent") == "events":
+            campus_failures = int(final_state.get("campus_failures", 0) or 0)
+            nearby_failures = int(final_state.get("nearby_failures", 0) or 0)
+            total_web_failures = campus_failures + nearby_failures
+            if total_web_failures >= 2:
+                gemini_options = await _generate_gemini_event_options(
+                    str(effective_context.get("user_message", "")),
+                    [str(item) for item in (final_state.get("interested_categories") or ["general"])],
+                    final_state.get("date_preference"),
+                )
+                if gemini_options:
+                    result["options"] = [
+                        {
+                            "name": event.get("name"),
+                            "date": event.get("date"),
+                            "time": event.get("time"),
+                            "location": event.get("location"),
+                            "tags": event.get("tags", []),
+                            "free_food": bool(event.get("free_food", False)),
+                        }
+                        for event in gemini_options
+                    ]
+                    result["event_recommendations"] = result["options"]
+                    result.setdefault("data_sources", {})["events"] = "gemini_after_web_failures"
+                    result.setdefault("data_sources", {})["gemini_used"] = True
+                    result["warning"] = "Live web/API event sources failed repeatedly; Gemini fallback used after retries."
+                    return result
     except Exception:
         pass
 
-    if strict_live_mode_enabled():
-        return {
-            "agent": "events",
-            "options": [],
-            "error": "No live event data available from UMD/Eventbrite sources",
-            "needs_user_input": True,
-            "follow_up_questions": [
-                "Try a more specific event type (for example career fair, workshop, or concert).",
-                "Try again in a few minutes if event sources are temporarily unavailable.",
-            ],
-        }
-
     return {
         "agent": "events",
-        "options": [
-            {
-                "name": event_name,
-                "date": (datetime.now() + timedelta(days=details["date_offset_days"])).strftime("%Y-%m-%d"),
-                "time": details["time"],
-                "location": details["location"],
-                "tags": details["tags"],
-                "free_food": details["free_food"],
-            }
-            for event_name, details in KNOWN_UMD_EVENTS.items()
-        ],
+        "options": [],
+        "error": "No live event data available, and Gemini fallback failed after repeated web/API attempts.",
         "needs_user_input": True,
         "follow_up_questions": [
-            "What type of events are you interested in?",
-            "When would you like to attend?",
+            "Try a more specific event type (for example career fair, workshop, or concert).",
+            "Try again in a few minutes if event sources are temporarily unavailable.",
         ],
     }
