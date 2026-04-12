@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { submitQueryWithProgress } from '@/lib/api';
+import { QuerySubmitContext, submitQueryWithProgress } from '@/lib/api';
 import { QueryResponse, QueryTimelineEvent } from '@/lib/types';
 
 export function useQuery() {
@@ -8,13 +8,13 @@ export function useQuery() {
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<QueryTimelineEvent[]>([]);
 
-  async function submit(message: string) {
+  async function submit(message: string, submitContext?: QuerySubmitContext) {
     setLoading(true);
     setError(null);
     setData(null);
     setEvents([]);
     try {
-      const response = await submitQueryWithProgress(message, (event) => {
+      const response = await submitQueryWithProgress(message, submitContext, (event) => {
         setEvents((current) => [...current, event]);
       });
       setData(response);

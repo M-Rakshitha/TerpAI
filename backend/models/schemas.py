@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 class QueryRequest(BaseModel):
     message: str = Field(min_length=1)
     debug_trace_context: bool = False
+    user_location: str | None = None
+    current_location_coords: dict[str, float] | None = None
+    location_permission_granted: bool | None = None
 
 
 class StudyBlock(BaseModel):

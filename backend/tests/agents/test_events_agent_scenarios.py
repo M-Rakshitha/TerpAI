@@ -42,6 +42,9 @@ def _mock_external_calls(monkeypatch: pytest.MonkeyPatch) -> None:
         "_query_eventbrite_nearby",
         lambda: [],
     )
+    monkeypatch.setattr(events_agent, "_fetch_calendar_events_for_date", lambda date_value: [])
+    monkeypatch.setattr(events_agent, "_fetch_calendar_search_events", lambda query: [])
+    monkeypatch.setattr(events_agent, "_fetch_terplink_events", lambda query, date_preference=None: [])
 
 
 @pytest.mark.asyncio
@@ -163,3 +166,51 @@ async def test_events_agent_returns_fallback_on_no_matches() -> None:
     assert isinstance(result.get("options"), list)
     # Should return something, even if empty
     assert len(result["options"]) >= 0
+
+
+@pytest.mark.asyncio
+async def test_events_agent_uses_specific_date_calendar_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        events_agent,
+        "_fetch_calendar_events_for_date",
+        lambda date_value: [
+            {
+                "name": "Music For All: Concert Band Festival",
+                "date": date_value,
+                "time": "8:00 AM",
+                "location": "The Clarice Smith Performing Arts Center",
+                "url": "https://calendar.umd.edu/music-for-all-concert-band-festival-3",
+                "tags": ["music", "festival"],
+                "free_food": False,
+                "category": "campus",
+            }
+        ],
+    )
+
+    result = await events_agent.run({"user_message": "events on 2026-04-11"})
+    assert result.get("agent") == "events"
+    assert any(option.get("date") == "2026-04-11" for option in result.get("options", []))
+
+
+@pytest.mark.asyncio
+async def test_events_agent_includes_terplink_club_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        events_agent,
+        "_fetch_terplink_events",
+        lambda query, date_preference=None: [
+            {
+                "name": "Cosmic Bowling",
+                "date": "2026-04-11",
+                "time": "8:00 PM",
+                "location": "TerpZone",
+                "url": "https://terplink.umd.edu/event/12014970",
+                "tags": ["club", "social"],
+                "free_food": False,
+                "category": "club",
+            }
+        ],
+    )
+
+    result = await events_agent.run({"user_message": "club events this weekend"})
+    assert result.get("agent") == "events"
+    assert any("terplink.umd.edu" in str(rec.get("registration_url", "")) for rec in result.get("event_recommendations", []))

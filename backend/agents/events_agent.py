@@ -5,6 +5,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from xml.etree import ElementTree as ET
 from typing import Any, TypedDict
 from urllib.parse import quote_plus
 
@@ -25,8 +26,11 @@ except Exception:
 # External websites
 UMD_CALENDAR_HOME = "https://calendar.umd.edu/"
 UMD_CALENDAR_GRAPHQL = "https://calendar.umd.edu/graphql"
+UMD_CALENDAR_SEARCH = "https://calendar.umd.edu/search"
 EVENTBRITE_SEARCH_URL = "https://www.eventbrite.com/d/md--college-park/events/"
 UMD_EVENTS_RSS = "https://news.umd.edu/events/upcoming"
+TERPLINK_EVENTS_PAGE = "https://terplink.umd.edu/events"
+TERPLINK_EVENTS_RSS = "https://terplink.umd.edu/events.rss"
 
 EVENT_KEYWORDS = [
     "concert",
@@ -67,50 +71,6 @@ TIME_KEYWORDS = {
     "night": "night",
 }
 
-KNOWN_UMD_EVENTS = {
-    "McKeldin Library Cleanup": {
-        "time": "11:00 AM",
-        "date_offset_days": 0,
-        "location": "McKeldin Library, University of Maryland",
-        "tags": ["club", "community service"],
-        "free_food": False,
-        "category": "community",
-    },
-    "Engineering Career Fair": {
-        "time": "2:00 PM",
-        "date_offset_days": 3,
-        "location": "Stamp Student Union, University of Maryland",
-        "tags": ["career", "engineering", "networking"],
-        "free_food": True,
-        "category": "career",
-    },
-    "Student Organization Fair": {
-        "time": "12:00 PM",
-        "date_offset_days": 7,
-        "location": "Stamp Student Union, University of Maryland",
-        "tags": ["student", "club"],
-        "free_food": True,
-        "category": "community",
-    },
-    "Campus Movie Night": {
-        "time": "8:00 PM",
-        "date_offset_days": 2,
-        "location": "Nyumburu Cultural Center, University of Maryland",
-        "tags": ["entertainment", "social"],
-        "free_food": True,
-        "category": "social",
-    },
-    "Mathematics Colloquium": {
-        "time": "3:30 PM",
-        "date_offset_days": 4,
-        "location": "Mathematics Library, University of Maryland",
-        "tags": ["academic", "lecture", "mathematics"],
-        "free_food": False,
-        "category": "academic",
-    },
-}
-
-
 class EventsState(TypedDict, total=False):
     context: dict[str, Any]
     user_message: str
@@ -136,7 +96,7 @@ def _extract_categories_from_message(message: str) -> list[str]:
     for keyword in EVENT_KEYWORDS:
         if keyword in lowered:
             found.append(keyword)
-    return list(dict.fromkeys(found)) if found else ["general"]
+    return list(dict.fromkeys(found))
 
 
 def _extract_dietary_from_message(message: str) -> list[str]:
@@ -150,6 +110,37 @@ def _extract_dietary_from_message(message: str) -> list[str]:
 
 def _extract_date_preference(message: str) -> str | None:
     lowered = message.lower()
+    iso_match = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", lowered)
+    if iso_match:
+        return f"{iso_match.group(1)}-{iso_match.group(2)}-{iso_match.group(3)}"
+
+    month_match = re.search(
+        r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:,?\s*(20\d{2}))?\b",
+        lowered,
+    )
+    if month_match:
+        month_map = {
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
+        }
+        month_num = month_map[month_match.group(1)]
+        day = int(month_match.group(2))
+        year = int(month_match.group(3) or datetime.now().year)
+        try:
+            return datetime(year, month_num, day).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
     for date_term in TIME_KEYWORDS.keys():
         if date_term in lowered:
             return date_term
@@ -321,6 +312,160 @@ def _fetch_live_campus_events() -> list[dict[str, Any]]:
     return []
 
 
+def _extract_calendar_events_from_html(html: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for match in re.finditer(r'<a[^>]+href="(?P<url>https://calendar\.umd\.edu/[^"]+)"[^>]*>(?P<title>[^<]+)</a>', html):
+        url = str(match.group("url")).strip()
+        title = re.sub(r"\s+", " ", str(match.group("title"))).strip()
+        if not url or not title:
+            continue
+        lowered = title.lower()
+        if any(noise in lowered for noise in ["university of maryland", "campus calendar", "view event", "additional links", "privacy policy"]):
+            continue
+        key = f"{title.lower()}::{url}"
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append(
+            {
+                "name": title,
+                "date": "",
+                "time": "TBA",
+                "location": "University of Maryland",
+                "url": url,
+                "tags": _extract_title_tags(title),
+                "free_food": "food" in lowered or "refreshment" in lowered,
+                "category": "campus",
+            }
+        )
+        if len(events) >= 20:
+            break
+    return events
+
+
+def _fetch_calendar_events_for_date(date_value: str) -> list[dict[str, Any]]:
+    try:
+        dt = datetime.strptime(date_value, "%Y-%m-%d")
+    except ValueError:
+        return []
+    url = f"{UMD_CALENDAR_HOME}events/{dt.strftime('%Y/%m/%d')}"
+    try:
+        html = _fetch_html(url)
+    except Exception:
+        return []
+
+    events = _extract_calendar_events_from_html(html)
+    for event in events:
+        event["date"] = date_value
+    return events
+
+
+def _fetch_calendar_search_events(query: str) -> list[dict[str, Any]]:
+    if not query.strip():
+        return []
+    try:
+        response = requests.get(
+            UMD_CALENDAR_SEARCH,
+            params={"q": query.strip()},
+            timeout=8,
+            headers={"User-Agent": "terpai-backend/0.1"},
+        )
+        response.raise_for_status()
+        html = response.text
+    except Exception:
+        return []
+
+    events = _extract_calendar_events_from_html(html)
+    for event in events:
+        if not event.get("date"):
+            event["date"] = datetime.now().strftime("%Y-%m-%d")
+    return events
+
+
+def _fetch_terplink_events(query: str, date_preference: str | None = None) -> list[dict[str, Any]]:
+    try:
+        rss = requests.get(TERPLINK_EVENTS_RSS, timeout=8, headers={"User-Agent": "terpai-backend/0.1"})
+        rss.raise_for_status()
+        root = ET.fromstring(rss.text)
+    except Exception:
+        return []
+
+    normalized_query = query.lower().strip()
+    target_date = date_preference if date_preference and re.match(r"^20\d{2}-\d{2}-\d{2}$", date_preference) else None
+    events: list[dict[str, Any]] = []
+
+    for item in root.findall("./channel/item")[:80]:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        description = (item.findtext("description") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
+        if not title or not link:
+            continue
+
+        blob = f"{title} {description}".lower()
+        if normalized_query and normalized_query not in blob:
+            # Keep broad terms by token overlap for computer science / club style queries.
+            query_tokens = [token for token in re.split(r"[^a-z0-9]+", normalized_query) if len(token) >= 3]
+            if query_tokens and not any(token in blob for token in query_tokens):
+                continue
+
+        parsed_date = None
+        try:
+            parsed_date = datetime.strptime(pub_date[:25], "%a, %d %b %Y %H:%M:%S")
+        except Exception:
+            parsed_date = datetime.now()
+        date_str = parsed_date.strftime("%Y-%m-%d")
+        if target_date and date_str != target_date:
+            continue
+
+        location_match = re.search(r"located at\s+([^<]+)", description, flags=re.IGNORECASE)
+        location = location_match.group(1).strip() if location_match else "University of Maryland"
+        time_match = re.search(r"happening on\s+[^\d]*(\d{1,2}:\d{2}\s*[AP]M)", description, flags=re.IGNORECASE)
+        time_text = time_match.group(1).strip() if time_match else "TBA"
+
+        events.append(
+            {
+                "name": title,
+                "date": date_str,
+                "time": time_text,
+                "location": location,
+                "url": link,
+                "tags": list(dict.fromkeys(["club", *(_extract_title_tags(title))])),
+                "free_food": "food" in description.lower() or "snack" in description.lower(),
+                "category": "club",
+            }
+        )
+        if len(events) >= 20:
+            break
+
+    return events
+
+
+def _derive_search_query(message: str, categories: list[str]) -> str:
+    lowered = message.lower()
+    if "computer science" in lowered or "comp sci" in lowered or "cs" in lowered:
+        return "computer science"
+    if categories:
+        return " ".join(categories[:2])
+    tokens = [token for token in re.split(r"[^a-z0-9]+", lowered) if len(token) >= 4]
+    return " ".join(tokens[:3])
+
+
+def _dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        name = str(event.get("name", "")).strip().lower()
+        date = str(event.get("date", "")).strip()
+        if not name:
+            continue
+        key = f"{name}::{date}"
+        if key not in deduped:
+            deduped[key] = event
+    return list(deduped.values())
+
+
 def _query_eventbrite_nearby() -> list[dict[str, Any]]:
     try:
         html = _fetch_html(EVENTBRITE_SEARCH_URL)
@@ -365,7 +510,17 @@ def _query_eventbrite_nearby() -> list[dict[str, Any]]:
 
 def _node_ingest_context(state: EventsState) -> EventsState:
     context = state.get("context", {})
-    message = str(context.get("user_message", ""))
+    message = str(context.get("agent_prompt") or context.get("user_message") or context.get("query") or "").strip()
+
+    if not message:
+        return {
+            "user_message": "",
+            "interested_categories": [],
+            "dietary_preferences": [],
+            "date_preference": None,
+            "time_preference": None,
+            "free_food_only": False,
+        }
 
     categories = _extract_categories_from_message(message)
     dietary = _extract_dietary_from_message(message)
@@ -384,8 +539,18 @@ def _node_ingest_context(state: EventsState) -> EventsState:
 
 
 def _node_fetch_campus_events(state: EventsState) -> EventsState:
+    message = str(state.get("user_message", "")).strip()
+    categories = state.get("interested_categories", [])
+    date_pref = state.get("date_preference")
+    query = _derive_search_query(message, categories)
+
     try:
         events = _fetch_live_campus_events()
+        if isinstance(date_pref, str) and re.match(r"^20\d{2}-\d{2}-\d{2}$", date_pref):
+            events.extend(_fetch_calendar_events_for_date(date_pref))
+        if query:
+            events.extend(_fetch_calendar_search_events(query))
+        events = _dedupe_events(events)
         failures = 0 if events else 1
     except Exception:
         events = []
@@ -395,8 +560,14 @@ def _node_fetch_campus_events(state: EventsState) -> EventsState:
 
 
 def _node_fetch_nearby_events(state: EventsState) -> EventsState:
+    message = str(state.get("user_message", "")).strip()
+    categories = state.get("interested_categories", [])
+    date_pref = state.get("date_preference")
+    query = _derive_search_query(message, categories)
     try:
         nearby = _query_eventbrite_nearby()
+        nearby.extend(_fetch_terplink_events(query, date_pref))
+        nearby = _dedupe_events(nearby)
         failures = 0 if nearby else 1
     except Exception:
         nearby = []
@@ -406,9 +577,9 @@ def _node_fetch_nearby_events(state: EventsState) -> EventsState:
 
 
 def _node_rank_events(state: EventsState) -> EventsState:
-    categories = state.get("interested_categories", ["general"])
+    categories = state.get("interested_categories", [])
     dietary = state.get("dietary_preferences", [])
-    date_pref = state.get("date_preference") or "today"
+    date_pref = state.get("date_preference")
     time_pref = state.get("time_preference")
     free_food_only = state.get("free_food_only", False)
 
@@ -430,9 +601,12 @@ def _node_rank_events(state: EventsState) -> EventsState:
         elif date_pref == "tomorrow" and date_str == (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"):
             score += 2.0
         elif date_pref == "this weekend":
-            event_date = datetime.strptime(date_str, "%Y-%m-%d")
-            if event_date.weekday() in (5, 6):
-                score += 2.0
+            try:
+                event_date = datetime.strptime(date_str, "%Y-%m-%d")
+                if event_date.weekday() in (5, 6):
+                    score += 2.0
+            except Exception:
+                pass
 
         # Time preference
         if time_pref:
@@ -482,7 +656,38 @@ def _node_build_registration_links(state: EventsState) -> EventsState:
 
 
 def _node_build_result(state: EventsState) -> EventsState:
+    message = str(state.get("user_message", "")).strip()
     ranked = state.get("ranked_events", [])
+
+    if not message:
+        return {
+            "result": {
+                "agent": "events",
+                "options": [],
+                "event_recommendations": [],
+                "error": "Events agent requires a clear event request in the prompt.",
+                "needs_user_input": True,
+                "follow_up_questions": [
+                    "What type of events are you looking for (for example workshop, concert, career fair)?",
+                    "When do you want to attend (today, tomorrow, weekend, next week)?",
+                ],
+            }
+        }
+
+    if not ranked:
+        return {
+            "result": {
+                "agent": "events",
+                "options": [],
+                "event_recommendations": [],
+                "error": "No live event options could be retrieved from configured sources.",
+                "needs_user_input": True,
+                "follow_up_questions": [
+                    "Try including a specific event type in your prompt.",
+                    "Try a time window such as today, tomorrow, or this weekend.",
+                ],
+            }
+        }
 
     options = [
         {
@@ -505,14 +710,30 @@ def _node_build_result(state: EventsState) -> EventsState:
             "category": event.get("category"),
             "free_food": event.get("free_food"),
             "registration_url": state.get("registration_links", {}).get(event.get("name", ""), ""),
+            "source_url": event.get("url", ""),
         }
         for event in ranked[:5]
     ]
 
+    web_references: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for event in ranked:
+        url = str(event.get("url", "")).strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        web_references.append(
+            {
+                "title": str(event.get("name") or "Event"),
+                "url": url,
+                "source": str(event.get("source") or "web"),
+            }
+        )
+
     needs_input = False
     follow_up: list[str] = []
 
-    if not state.get("interested_categories") or state.get("interested_categories") == ["general"]:
+    if not state.get("interested_categories"):
         needs_input = True
         follow_up.append("What type of events are you interested in? (concert, career fair, social, etc.)")
 
@@ -536,6 +757,8 @@ def _node_build_result(state: EventsState) -> EventsState:
     if needs_input:
         result["needs_user_input"] = True
         result["follow_up_questions"] = follow_up
+    if web_references:
+        result["web_references"] = web_references[:15]
 
     return {"result": result}
 
@@ -587,62 +810,6 @@ async def _generate_ai_event_summary(user_message: str, result: dict[str, Any]) 
     return await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 4)
 
 
-async def _generate_gemini_event_options(
-    user_message: str,
-    categories: list[str],
-    date_preference: str | None,
-) -> list[dict[str, Any]]:
-    prompt = (
-        "You are a UMD events assistant using web knowledge. "
-        "Return ONLY valid JSON as an array of 3 to 5 event objects with keys: "
-        "name, date (YYYY-MM-DD), time, location, tags (array), free_food (boolean), category.\n\n"
-        f"User query: {user_message}\n"
-        f"Categories: {categories}\n"
-        f"Date preference: {date_preference or 'not specified'}\n"
-    )
-    raw = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 10)
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-
-    try:
-        payload = json.loads(cleaned)
-    except Exception:
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
-        try:
-            payload = json.loads(cleaned[start : end + 1])
-        except Exception:
-            return []
-
-    if not isinstance(payload, list):
-        return []
-
-    options: list[dict[str, Any]] = []
-    for item in payload[:5]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-        options.append(
-            {
-                "name": name,
-                "date": str(item.get("date", datetime.now().strftime("%Y-%m-%d"))),
-                "time": str(item.get("time", "TBA")),
-                "location": str(item.get("location", "University of Maryland")),
-                "tags": [str(tag) for tag in item.get("tags", []) if str(tag).strip()],
-                "free_food": bool(item.get("free_food", False)),
-                "category": str(item.get("category", "campus")),
-            }
-        )
-    return options
-
-
 async def run(context: dict) -> dict:
     effective_context = dict(context)
     if isinstance(effective_context.get("agent_prompt"), str) and effective_context.get("agent_prompt"):
@@ -668,40 +835,16 @@ async def run(context: dict) -> dict:
                     result["error"] = f"Events AI recommendation failed: {type(exc).__name__}: {exc}"
             return result
 
-        if isinstance(final_state, dict) and isinstance(result, dict) and result.get("agent") == "events":
-            campus_failures = int(final_state.get("campus_failures", 0) or 0)
-            nearby_failures = int(final_state.get("nearby_failures", 0) or 0)
-            total_web_failures = campus_failures + nearby_failures
-            if total_web_failures >= 2:
-                gemini_options = await _generate_gemini_event_options(
-                    str(effective_context.get("user_message", "")),
-                    [str(item) for item in (final_state.get("interested_categories") or ["general"])],
-                    final_state.get("date_preference"),
-                )
-                if gemini_options:
-                    result["options"] = [
-                        {
-                            "name": event.get("name"),
-                            "date": event.get("date"),
-                            "time": event.get("time"),
-                            "location": event.get("location"),
-                            "tags": event.get("tags", []),
-                            "free_food": bool(event.get("free_food", False)),
-                        }
-                        for event in gemini_options
-                    ]
-                    result["event_recommendations"] = result["options"]
-                    result.setdefault("data_sources", {})["events"] = "gemini_after_web_failures"
-                    result.setdefault("data_sources", {})["gemini_used"] = True
-                    result["warning"] = "Live web/API event sources failed repeatedly; Gemini fallback used after retries."
-                    return result
+        if isinstance(result, dict):
+            return result
     except Exception:
         pass
 
     return {
         "agent": "events",
         "options": [],
-        "error": "No live event data available, and Gemini fallback failed after repeated web/API attempts.",
+        "event_recommendations": [],
+        "error": "No live event data available from configured sources.",
         "needs_user_input": True,
         "follow_up_questions": [
             "Try a more specific event type (for example career fair, workshop, or concert).",

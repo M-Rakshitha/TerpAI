@@ -30,6 +30,28 @@ async def test_task_planner_activates_dining_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_planner_routes_dietary_near_me_query() -> None:
+    result = await task_planner.run("vegan options near me")
+
+    assert "dining" in result.tasks
+    # Near-me dining requests should also route navigation help.
+    assert "navigator" in result.tasks
+
+
+@pytest.mark.asyncio
+async def test_task_planner_fallback_routes_vegetarian_nearby_when_ai_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _raise(*args, **kwargs):
+        raise RuntimeError("Gemini unavailable")
+
+    monkeypatch.setattr(task_planner, "call_gemini_with_retry", _raise)
+
+    result = await task_planner.run("where can I find vegetarian options nearby")
+
+    assert "dining" in result.tasks
+    assert "navigator" in result.tasks
+
+
+@pytest.mark.asyncio
 async def test_task_planner_activates_events_agent() -> None:
     """Test that event keywords activate events agent."""
     result = await task_planner.run("What concerts are happening this weekend?")

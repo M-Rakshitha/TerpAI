@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from typing import Any
 
@@ -12,12 +13,16 @@ from backend.utils.gemini_client import GeminiClientError
 from backend.utils.runtime_flags import strict_live_mode_enabled
 from backend.utils.student_apis import (
     search_planetterp_professors,
-    get_planetterp_professor_info,
     get_umdio_professors,
     format_professor_evidence,
 )
 
 DUCKDUCKGO_HTML = "https://duckduckgo.com/html/"
+
+STUDY_API_STAGE_TIMEOUT_SECONDS = float(os.getenv("STUDY_API_STAGE_TIMEOUT_SECONDS", "10"))
+STUDY_WEB_STAGE_TIMEOUT_SECONDS = float(os.getenv("STUDY_WEB_STAGE_TIMEOUT_SECONDS", "10"))
+STUDY_GEMINI_TIMEOUT_SECONDS = float(os.getenv("STUDY_GEMINI_TIMEOUT_SECONDS", "10"))
+STUDY_MAX_WEB_QUERIES = int(os.getenv("STUDY_MAX_WEB_QUERIES", "3"))
 
 RESOURCE_PROMPT = """
 You are a University of Maryland academic support assistant.
@@ -107,47 +112,85 @@ def _empty_result(error: str, web_used: bool) -> dict[str, Any]:
             "web_search_used": web_used,
             "gemini_used": False,
         },
+        "web_references": [],
     }
 
 
+def _extract_professor_name_hint(message: str) -> str | None:
+    patterns = [
+        r"(?:professor|prof)\s+([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){0,2})",
+        r"office hours for\s+([A-Z][a-zA-Z'\-]+(?:\s+[A-Z][a-zA-Z'\-]+){0,2})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 async def run(context: dict) -> dict:
-    course = str(context.get("course", "General Course"))
-    user_message = str(context.get("user_message") or context.get("enriched_query") or f"Find UMD resources for {course}")
+    course = str(context.get("course") or "").strip()
+    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "").strip()
+
+    if not user_message:
+        return _empty_result("Study resources agent requires a clear request in the prompt", web_used=False)
     
     evidence: list[dict[str, str]] = []
+    seen_titles: set[str] = set()
 
-    # Try PlanetTerp API first for professor data (most reliable)
+    def _append_unique(items: list[dict[str, str]], limit: int = 12) -> None:
+        for item in items:
+            title = str(item.get("title", "")).strip().lower()
+            if not title or title in seen_titles:
+                continue
+            seen_titles.add(title)
+            evidence.append(item)
+            if len(evidence) >= limit:
+                break
+
+    professor_hint = _extract_professor_name_hint(user_message)
+
+    # Prefer UMD professor API first.
     try:
-        planetterp_profs = await search_planetterp_professors(
-            query=user_message.strip() or course, limit=5
+        umdio_profs = await asyncio.wait_for(
+            get_umdio_professors(name=professor_hint or None, limit=8),
+            timeout=max(3.0, STUDY_API_STAGE_TIMEOUT_SECONDS),
         )
-        if planetterp_profs:
-            prof_evidence = await format_professor_evidence(planetterp_profs, "planetterp")
-            evidence.extend(prof_evidence)
+        if umdio_profs:
+            umdio_evidence = await format_professor_evidence(umdio_profs, "umdio")
+            _append_unique(umdio_evidence)
     except Exception:
         pass
 
-    # Try umd.io API as secondary source
+    # Secondary API source: PlanetTerp professor search.
     if len(evidence) < 3:
         try:
-            umdio_profs = await get_umdio_professors(limit=5)
-            if umdio_profs:
-                umdio_evidence = await format_professor_evidence(umdio_profs, "umdio")
-                evidence.extend(umdio_evidence[:3 - len(evidence)])
+            planetterp_profs = await asyncio.wait_for(
+                search_planetterp_professors(query=professor_hint or user_message.strip() or course, limit=6),
+                timeout=max(3.0, STUDY_API_STAGE_TIMEOUT_SECONDS),
+            )
+            if planetterp_profs:
+                prof_evidence = await format_professor_evidence(planetterp_profs, "planetterp")
+                _append_unique(prof_evidence)
         except Exception:
             pass
 
     # Fall back to web search for tutoring and general resources
     queries = [
-        f"UMD {course} tutoring center",
-        f"UMD {course} professor office hours",
-        "UMD learning assistance service",
-        "UMD writing center tutoring",
-        "UMD library subject specialist",
+        f"site:umd.edu {course or 'computer science'} tutoring",
+        f"site:umd.edu {professor_hint or 'professor'} office hours",
+        "site:umd.edu learning assistance service",
+        "site:umd.edu writing center tutoring",
+        "site:umd.edu library subject specialist",
     ]
-    search_batches = await asyncio.gather(
-        *[asyncio.to_thread(_search_links, query, 4) for query in queries]
-    )
+    queries = queries[: max(1, STUDY_MAX_WEB_QUERIES)]
+    try:
+        search_batches = await asyncio.wait_for(
+            asyncio.gather(*[asyncio.to_thread(_search_links, query, 3) for query in queries]),
+            timeout=max(4.0, STUDY_WEB_STAGE_TIMEOUT_SECONDS),
+        )
+    except Exception:
+        search_batches = []
 
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -167,9 +210,13 @@ async def run(context: dict) -> dict:
     if not merged and not evidence:
         return _empty_result("No live tutoring/professor resources found", web_used=False)
 
-    snippets = await asyncio.gather(
-        *[asyncio.to_thread(_fetch_text_snippet, item["url"]) for item in merged]
-    )
+    try:
+        snippets = await asyncio.wait_for(
+            asyncio.gather(*[asyncio.to_thread(_fetch_text_snippet, item["url"]) for item in merged]),
+            timeout=max(4.0, STUDY_WEB_STAGE_TIMEOUT_SECONDS),
+        )
+    except Exception:
+        snippets = [""] * len(merged)
     web_evidence = [
         {
             "title": item["title"],
@@ -179,7 +226,16 @@ async def run(context: dict) -> dict:
         for item, snippet in zip(merged, snippets)
         if snippet
     ]
-    evidence.extend(web_evidence)
+    _append_unique(web_evidence)
+
+    web_references = [
+        {
+            "title": str(item.get("title") or "Resource"),
+            "url": str(item.get("url") or ""),
+        }
+        for item in evidence
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
     
     if not evidence:
         return _empty_result("Live resource links were found but content could not be retrieved", web_used=True)
@@ -190,7 +246,10 @@ async def run(context: dict) -> dict:
     )
 
     try:
-        raw = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 8)
+        raw = await asyncio.wait_for(
+            call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 8),
+            timeout=max(5.0, STUDY_GEMINI_TIMEOUT_SECONDS),
+        )
         parsed = _parse_json(raw)
         tutoring = parsed.get("tutoring", []) if isinstance(parsed, dict) else []
         office_hours = parsed.get("office_hours", []) if isinstance(parsed, dict) else []
@@ -208,6 +267,7 @@ async def run(context: dict) -> dict:
             "office_hours": office_hours,
             "resources": resources,
             "advisor_notes": advisor_notes,
+            "web_references": web_references[:15],
             "data_sources": {
                 "api_sources": ["planetterp", "umdio", "web_search"],
                 "provider": "planetterp+duckduckgo_html",
