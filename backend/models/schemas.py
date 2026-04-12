@@ -182,3 +182,39 @@ class TaskPlannerResponse(BaseModel):
 class AgentExecutionResult(BaseModel):
     agents_used: list[str]
     results: dict[str, Any]
+
+
+class GoogleCalendarTokenPayload(BaseModel):
+    refresh_token: str = Field(min_length=8)
+
+
+class GoogleCalendarLinkTokenPayload(BaseModel):
+    """Server-to-server link from the Next.js OAuth callback (protected by shared secret)."""
+
+    user_sub: str = Field(min_length=1)
+    refresh_token: str = Field(min_length=8)
+
+
+class GoogleCalendarEventCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    location: str | None = None
+    start: str = Field(description="ISO 8601 datetime or date")
+    end: str | None = Field(default=None, description="ISO 8601 datetime; defaults to start + 1h")
+    description: str | None = None
+
+
+class GoogleCalendarEventLinkCreate(GoogleCalendarEventCreate):
+    """Create event on behalf of user_sub (Next.js server only, shared secret)."""
+
+    user_sub: str = Field(min_length=1)
+
+
+class GoogleCalendarStatusResponse(BaseModel):
+    connected: bool
+
+
+class GoogleCalendarEventResponse(BaseModel):
+    ok: bool
+    event_id: str | None = None
+    html_link: str | None = None
+    detail: str | None = None

@@ -25,6 +25,11 @@ def _mock_external_calls(monkeypatch: pytest.MonkeyPatch) -> None:
         "_query_overpass_restaurants",
         lambda _lat, _lon, radius_m=2200: [],
     )
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_nominatim_restaurants",
+        lambda _origin_label, limit=12: [],
+    )
 
 
 @pytest.mark.asyncio
@@ -279,7 +284,7 @@ async def test_dining_agent_uses_nominatim_when_overpass_fails(monkeypatch: pyte
 
     result = await dining_agent.run(
         {
-            "user_message": "Find vegan dinner under $15",
+            "user_message": "Find dinner under $15 near campus",
             "budget": 15,
         }
     )
