@@ -411,10 +411,22 @@ def _resolve_destination(context: dict[str, Any]) -> tuple[str, dict[str, Any], 
 
 def _resolve_origin(context: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     extracted_origin = _extract_origin_from_text(_extract_text_context(context))
+    location = context.get("location")
+    if isinstance(location, dict):
+        lat = location.get("lat")
+        lng = location.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            origin = f"{lat},{lng}"
+            return origin, {"name_long": origin, "name_short": "", "number": "", "x": lng, "y": lat}
+
     current_location_coords = context.get("current_location_coords")
     if isinstance(current_location_coords, dict):
         latitude = current_location_coords.get("latitude")
         longitude = current_location_coords.get("longitude")
+        if not isinstance(latitude, (int, float)):
+            latitude = current_location_coords.get("lat")
+        if not isinstance(longitude, (int, float)):
+            longitude = current_location_coords.get("lng")
         if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
             origin = f"{latitude},{longitude}"
             return origin, {"name_long": origin, "name_short": "", "number": "", "x": longitude, "y": latitude}
@@ -615,10 +627,20 @@ async def _extract_from_prompt_node(state: NavState) -> NavState:
     ctx_origin, _ = _resolve_origin(context)
     ctx_destination, _, _ = _resolve_destination(context)
     has_coords = False
+    location = context.get("location")
+    if isinstance(location, dict):
+        lat = location.get("lat")
+        lng = location.get("lng")
+        has_coords = isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+
     current_location_coords = context.get("current_location_coords")
-    if isinstance(current_location_coords, dict):
+    if not has_coords and isinstance(current_location_coords, dict):
         latitude = current_location_coords.get("latitude")
         longitude = current_location_coords.get("longitude")
+        if not isinstance(latitude, (int, float)):
+            latitude = current_location_coords.get("lat")
+        if not isinstance(longitude, (int, float)):
+            longitude = current_location_coords.get("lng")
         has_coords = isinstance(latitude, (int, float)) and isinstance(longitude, (int, float))
 
     origin_name = ctx_origin if has_coords else (extracted_origin or ctx_origin)

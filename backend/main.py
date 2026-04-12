@@ -274,6 +274,10 @@ def _query_requires_user_location(message: str) -> bool:
 
 def _format_location_coords(value: object) -> str | None:
     if isinstance(value, dict):
+        lat = value.get("lat")
+        lng = value.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            return f"{lat},{lng}"
         latitude = value.get("latitude")
         longitude = value.get("longitude")
         if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
@@ -282,6 +286,29 @@ def _format_location_coords(value: object) -> str | None:
         latitude, longitude = value
         if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
             return f"{latitude},{longitude}"
+    return None
+
+
+def _normalize_location(value: object) -> dict[str, float] | None:
+    if isinstance(value, dict):
+        lat = value.get("lat")
+        lng = value.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            return {"lat": float(lat), "lng": float(lng)}
+        latitude = value.get("latitude")
+        longitude = value.get("longitude")
+        if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)):
+            return {"lat": float(latitude), "lng": float(longitude)}
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        lat, lng = value
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            return {"lat": float(lat), "lng": float(lng)}
+    if isinstance(value, str) and _looks_like_coordinates(value):
+        parts = value.split(",", 1)
+        try:
+            return {"lat": float(parts[0]), "lng": float(parts[1])}
+        except (TypeError, ValueError):
+            return None
     return None
 
 
@@ -1169,6 +1196,7 @@ async def query(
         request_id=request_id,
         include_context=payload.debug_trace_context or _is_truthy_env("TRACE_INCLUDE_CONTEXT_DEFAULT", "false"),
         client_context={
+            "location": payload.location.model_dump() if payload.location else None,
             "user_location": payload.user_location,
             "current_location_coords": payload.current_location_coords,
             "location_permission_granted": payload.location_permission_granted,
@@ -1188,9 +1216,19 @@ async def _execute_pipeline(
     try:
         trace: list[dict] = []
         client_context = client_context or {}
+        normalized_location = _normalize_location(client_context.get("location"))
+        if normalized_location is None:
+            normalized_location = _normalize_location(client_context.get("current_location_coords"))
+
         provided_location_raw = client_context.get("user_location")
         provided_location = str(provided_location_raw).strip() if isinstance(provided_location_raw, str) else ""
-        provided_coords = _format_location_coords(client_context.get("current_location_coords"))
+        provided_coords = _format_location_coords(client_context.get("location")) or _format_location_coords(
+            client_context.get("current_location_coords")
+        )
+        if not provided_coords and _looks_like_coordinates(provided_location):
+            provided_coords = provided_location
+        if normalized_location is None and provided_coords:
+            normalized_location = _normalize_location(provided_coords)
         # Prefer explicit browser coordinates as the route origin whenever available.
         if provided_coords:
             provided_location = provided_coords
@@ -1202,79 +1240,31 @@ async def _execute_pipeline(
         per_agent_context: dict[str, dict] = {}
 
         if _query_requires_user_location(message) and not provided_location:
-            if location_permission_granted is False:
-                location_request_payload = _build_location_user_input_request(
-                    default_location,
-                    prompt=(
-                        "Location access was declined. "
-                        f"Continuing with default location: {default_location}."
-                    ),
-                    continuing_with_fallback=True,
-                )
-                provided_location = default_location
-                location_event = {
-                    "type": "user_input_request",
-                    "status": "fallback_applied",
-                    "timestamp": _ts(),
-                    "reason": "location_permission_denied",
-                    "pipeline_paused": False,
-                    "continuing_with_fallback": True,
-                    "fallback_location": default_location,
-                    "location_permission_granted": False,
-                }
-                if request_id is not None:
-                    location_event["request_id"] = request_id
-                trace.append(location_event)
-                if emit is not None:
-                    await emit(location_event)
-            else:
-                # Wait for user coordinates unless permission was explicitly denied.
-                location_request_payload = _build_location_user_input_request(
-                    default_location,
-                    prompt=(
-                        "Please allow location access so routes can start from your current coordinates. "
-                        f"If you decline, we will continue with default location: {default_location}."
-                    ),
-                    continuing_with_fallback=False,
-                )
-
-                waiting_event = {
-                    "type": "user_input_request",
-                    "status": "waiting",
-                    "timestamp": _ts(),
-                    "reason": "location_unavailable",
-                    "pipeline_paused": True,
-                    "continuing_with_fallback": False,
-                    "required_fields": ["user_location"],
-                    "fallback_location": default_location,
-                    "location_permission_granted": bool(location_permission_granted) if location_permission_granted is not None else None,
-                }
-                if request_id is not None:
-                    waiting_event["request_id"] = request_id
-                trace.append(waiting_event)
-                if emit is not None:
-                    await emit(waiting_event)
-
-                response = QueryResponse(
-                    query=message,
-                    agents_used=[],
-                    results=QueryResults(),
-                    user_input_request=location_request_payload,
-                    awaiting_user_input=True,
-                    pipeline_paused=True,
-                    location_fallback_used=False,
-                    location_default=default_location,
-                    presentation=_with_user_input_section(
-                        None,
-                        prompt=str(location_request_payload.get("prompt", "Location helps improve nearby results.")),
-                        required_fields=list(location_request_payload.get("required_fields", ["user_location"])),
-                        permission=str(location_request_payload.get("permission", "location")),
-                        fallback_location=default_location,
-                    ),
-                )
-                await _persist_latest_response(response)
-                await _persist_latest_events_trace(message=message, request_id=request_id, trace=trace, response=response)
-                return response, trace
+            fallback_reason = "location_permission_denied" if location_permission_granted is False else "location_unavailable"
+            location_request_payload = _build_location_user_input_request(
+                default_location,
+                prompt=(
+                    "Location was unavailable. "
+                    f"Continuing with default location: {default_location}."
+                ),
+                continuing_with_fallback=True,
+            )
+            provided_location = default_location
+            location_event = {
+                "type": "user_input_request",
+                "status": "fallback_applied",
+                "timestamp": _ts(),
+                "reason": fallback_reason,
+                "pipeline_paused": False,
+                "continuing_with_fallback": True,
+                "fallback_location": default_location,
+                "location_permission_granted": bool(location_permission_granted) if location_permission_granted is not None else None,
+            }
+            if request_id is not None:
+                location_event["request_id"] = request_id
+            trace.append(location_event)
+            if emit is not None:
+                await emit(location_event)
         elif _query_requires_user_location(message) and provided_location:
             location_event = {
                 "type": "user_input_request",
@@ -1359,9 +1349,15 @@ async def _execute_pipeline(
         context["api_priority"] = ["umdio", "planetterp", "web"]
         context["require_source_links"] = True
         context["verification_required"] = True
+        context["location"] = normalized_location
         if provided_location:
             context["user_location"] = provided_location
-        if provided_coords:
+        if normalized_location:
+            context["current_location_coords"] = {
+                "latitude": normalized_location["lat"],
+                "longitude": normalized_location["lng"],
+            }
+        elif provided_coords:
             context["current_location_coords"] = client_context.get("current_location_coords")
         if location_permission_granted is not None:
             context["location_permission_granted"] = bool(location_permission_granted)
@@ -1715,8 +1711,9 @@ async def query_stream(payload: QueryRequest) -> StreamingResponse:
                 request_id=request_id,
                 include_context=include_context,
                 client_context={
+                    "location": payload.location.model_dump() if payload.location else None,
                     "user_location": payload.user_location,
-                        "current_location_coords": payload.current_location_coords,
+                    "current_location_coords": payload.current_location_coords,
                     "location_permission_granted": payload.location_permission_granted,
                 },
                 emit=_emit_collect,
@@ -1789,6 +1786,7 @@ async def ws_query(websocket: WebSocket) -> None:
                     request_id=request_id,
                     include_context=include_context,
                     client_context={
+                        "location": incoming.get("location"),
                         "user_location": incoming.get("user_location"),
                         "current_location_coords": incoming.get("current_location_coords"),
                         "location_permission_granted": incoming.get("location_permission_granted"),

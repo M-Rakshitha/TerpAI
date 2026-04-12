@@ -238,3 +238,34 @@ async def test_navigator_agent_uses_umdio_building_fallback(monkeypatch: pytest.
     result = await navigator_agent.run({"destination": "ESJ"})
     assert result["destination"] == "Edward St. John Learning and Teaching Center"
     assert "google.com/maps" in result["map_url"]
+
+
+@pytest.mark.asyncio
+async def test_navigator_agent_uses_location_object_as_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        navigator_agent,
+        "_fetch_map_buildings",
+        lambda: [
+            {
+                "number": "030",
+                "name_short": "STAMP",
+                "name_long": "Stamp Student Union",
+                "x": -76.9448,
+                "y": 38.9881,
+                "search_text": "030 stamp stamp student union",
+            }
+        ],
+    )
+    monkeypatch.setattr(navigator_agent, "_fetch_map_suggestions", lambda query: [])
+    monkeypatch.setattr(navigator_agent, "_fetch_umdio_buildings", lambda: [])
+
+    result = await navigator_agent.run(
+        {
+            "user_message": "How do I get to Stamp Student Union?",
+            "location": {"lat": 38.9897, "lng": -76.9378},
+        }
+    )
+
+    assert result["origin"] == "38.9897,-76.9378"
+    assert "origin=38.9897%2C-76.9378" in result["map_url"]
+    assert "destination=STAMP" in result["map_url"] or "destination=Stamp+Student+Union" in result["map_url"]
