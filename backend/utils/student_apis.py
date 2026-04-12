@@ -350,6 +350,134 @@ async def get_umdio_majors(limit: int = 50) -> list[dict[str, Any]]:
         return []
 
 
+async def get_umdio_semesters(limit: int = 30) -> list[str]:
+    """Get available semester codes from umd.io courses API."""
+    cache_key = f"umdio_semesters:{limit}"
+    cached = _get_cached(cache_key, ttl_seconds=3600)
+    if cached is not None:
+        return cached
+
+    await _pace_request("umdio")
+    try:
+        response = requests.get(
+            f"{UMDIO_BASE}/courses/semesters",
+            timeout=5,
+            headers={"User-Agent": "terpai-backend/0.1"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        semesters = [str(item) for item in data if str(item).strip()] if isinstance(data, list) else []
+        results = semesters[:limit]
+        _set_cached(cache_key, results)
+        return results
+    except Exception:
+        return []
+
+
+async def get_umdio_departments(limit: int = 80) -> list[str]:
+    """Get available department codes from umd.io courses API."""
+    cache_key = f"umdio_departments:{limit}"
+    cached = _get_cached(cache_key, ttl_seconds=3600)
+    if cached is not None:
+        return cached
+
+    await _pace_request("umdio")
+    try:
+        response = requests.get(
+            f"{UMDIO_BASE}/courses/departments",
+            timeout=5,
+            headers={"User-Agent": "terpai-backend/0.1"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        departments = [str(item) for item in data if str(item).strip()] if isinstance(data, list) else []
+        results = departments[:limit]
+        _set_cached(cache_key, results)
+        return results
+    except Exception:
+        return []
+
+
+async def get_umdio_bus_routes(limit: int = 40) -> list[dict[str, Any]]:
+    """Get bus route list from umd.io bus API."""
+    cache_key = f"umdio_bus_routes:{limit}"
+    cached = _get_cached(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
+    await _pace_request("umdio")
+    try:
+        response = requests.get(
+            f"{UMDIO_BASE}/bus/routes",
+            timeout=5,
+            headers={"User-Agent": "terpai-backend/0.1"},
+        )
+        response.raise_for_status()
+        routes = response.json() if isinstance(response.json(), list) else []
+        results = routes[:limit]
+        _set_cached(cache_key, results)
+        return results
+    except Exception:
+        return []
+
+
+async def get_umdio_bus_stops(limit: int = 80) -> list[dict[str, Any]]:
+    """Get bus stop list from umd.io bus API."""
+    cache_key = f"umdio_bus_stops:{limit}"
+    cached = _get_cached(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
+    await _pace_request("umdio")
+    try:
+        response = requests.get(
+            f"{UMDIO_BASE}/bus/stops",
+            timeout=5,
+            headers={"User-Agent": "terpai-backend/0.1"},
+        )
+        response.raise_for_status()
+        stops = response.json() if isinstance(response.json(), list) else []
+        results = stops[:limit]
+        _set_cached(cache_key, results)
+        return results
+    except Exception:
+        return []
+
+
+def get_umdio_api_catalog() -> dict[str, list[str]]:
+    """Static endpoint catalog from beta.umd.io docs for routing/planning usage."""
+    return {
+        "courses": [
+            "/courses",
+            "/courses/list",
+            "/courses/sections",
+            "/courses/{course_ids}",
+            "/courses/{course_ids}/sections",
+            "/courses/semesters",
+            "/courses/departments",
+        ],
+        "professors": [
+            "/professors",
+        ],
+        "bus": [
+            "/bus/routes",
+            "/bus/routes/{route_ids}",
+            "/bus/routes/{route_id}/locations",
+            "/bus/routes/{route_id}/schedules",
+            "/bus/routes/{route_id}/arrivals/{stop_id}",
+            "/bus/stops",
+            "/bus/stops/{stop_ids}",
+        ],
+        "map": [
+            "/map/buildings",
+            "/map/buildings/{building_id}",
+        ],
+        "majors": [
+            "/majors/list",
+        ],
+    }
+
+
 # ============================================================================
 # HELPER FUNCTIONS FOR AGENTS
 # ============================================================================

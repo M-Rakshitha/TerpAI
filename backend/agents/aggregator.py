@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote_plus
 
 from backend.models.schemas import QueryResponse, QueryResults
 
@@ -13,6 +14,110 @@ RESULT_KEYS = [
     "study_resources",
     "jobs_research",
 ]
+
+
+def _collect_links(value: Any) -> list[str]:
+    links: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                lowered = str(key).lower()
+                if lowered.endswith("url") and isinstance(item, str) and item.startswith(("http://", "https://")):
+                    links.append(item)
+                else:
+                    _walk(item)
+            return
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(value)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for link in links:
+        if link in seen:
+            continue
+        seen.add(link)
+        deduped.append(link)
+    return deduped[:30]
+
+
+def _agent_numeric_snapshot(agent: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if agent == "dining":
+        options = payload.get("options") if isinstance(payload.get("options"), list) else []
+        return {"options": len(options)}
+    if agent == "events":
+        events = payload.get("events") if isinstance(payload.get("events"), list) else payload.get("options") if isinstance(payload.get("options"), list) else []
+        return {"events": len(events)}
+    if agent == "schedule":
+        blocks = payload.get("study_blocks") if isinstance(payload.get("study_blocks"), list) else []
+        return {"study_blocks": len(blocks)}
+    if agent == "study_resources":
+        tutoring = payload.get("tutoring") if isinstance(payload.get("tutoring"), list) else []
+        office_hours = payload.get("office_hours") if isinstance(payload.get("office_hours"), list) else []
+        resources = payload.get("resources") if isinstance(payload.get("resources"), list) else []
+        return {"tutoring": len(tutoring), "office_hours": len(office_hours), "resources": len(resources)}
+    if agent == "navigator":
+        steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+        return {"steps": len(steps), "walk_minutes": payload.get("walk_minutes")}
+    if agent == "jobs_research":
+        jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
+        labs = payload.get("labs") if isinstance(payload.get("labs"), list) else []
+        return {"jobs": len(jobs), "labs": len(labs)}
+    if agent == "finance":
+        return {"weekly_spent": payload.get("weekly_spent"), "budget_remaining": payload.get("budget_remaining")}
+    return {}
+
+
+def _normalize_jobs_research_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    jobs = payload.get("jobs") if isinstance(payload.get("jobs"), list) else []
+    labs = payload.get("labs") if isinstance(payload.get("labs"), list) else []
+
+    normalized_jobs: list[dict[str, Any]] = []
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("position") or item.get("name") or "").strip()
+        apply_url = str(item.get("apply_url") or item.get("link") or item.get("url") or "").strip()
+        if not title or not apply_url:
+            continue
+        normalized_jobs.append(
+            {
+                "title": title,
+                "department": str(item.get("department") or item.get("source") or "UMD").strip() or "UMD",
+                "pay": str(item.get("pay") or item.get("salary") or "N/A").strip() or "N/A",
+                "apply_url": apply_url,
+            }
+        )
+
+    normalized_labs: list[dict[str, Any]] = []
+    for item in labs:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or item.get("opportunity") or item.get("title") or "").strip()
+        contact = str(item.get("contact") or item.get("link") or item.get("url") or "").strip()
+        if not topic or not contact:
+            continue
+        normalized_labs.append(
+            {
+                "pi": str(item.get("pi") or "TBD").strip() or "TBD",
+                "department": str(item.get("department") or item.get("source") or "UMD").strip() or "UMD",
+                "topic": topic,
+                "contact": contact,
+            }
+        )
+
+    cold_email = str(payload.get("cold_email") or payload.get("research_email_template") or "").strip()
+    if not normalized_jobs and not normalized_labs and not cold_email:
+        return None
+
+    return {
+        "agent": "jobs_research",
+        "jobs": normalized_jobs,
+        "labs": normalized_labs,
+        "cold_email": cold_email,
+    }
 
 
 def _normalize_events_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -77,16 +182,80 @@ def _normalize_results_for_schema(agent_results: dict[str, Any]) -> dict[str, An
         normalized["study_resources"] = {"agent": "study_resources", **study_resources}
 
     jobs_research = agent_results.get("jobs_research")
-    if isinstance(jobs_research, dict) and all(field in jobs_research for field in ["jobs", "labs", "cold_email"]):
-        normalized["jobs_research"] = {"agent": "jobs_research", **jobs_research}
+    if isinstance(jobs_research, dict):
+        normalized_jobs_research = _normalize_jobs_research_payload(jobs_research)
+        if normalized_jobs_research is not None:
+            normalized["jobs_research"] = normalized_jobs_research
 
     return normalized
+
+
+def _build_combined_output(agent_results: dict[str, Any]) -> dict[str, Any] | None:
+    dining = agent_results.get("dining") if isinstance(agent_results.get("dining"), dict) else {}
+    navigator = agent_results.get("navigator") if isinstance(agent_results.get("navigator"), dict) else {}
+
+    options = dining.get("options") if isinstance(dining.get("options"), list) else []
+    if not options:
+        return None
+
+    navigator_origin = str(navigator.get("origin") or "current location")
+    combined_items: list[dict[str, Any]] = []
+
+    for option in options[:8]:
+        if not isinstance(option, dict):
+            continue
+        name = str(option.get("name") or "").strip()
+        if not name:
+            continue
+        coords = option.get("coordinates") if isinstance(option.get("coordinates"), list) else None
+        map_url: str
+        if coords and len(coords) == 2:
+            destination = f"{coords[0]},{coords[1]}"
+            map_url = (
+                "https://www.google.com/maps/dir/?api=1"
+                f"&origin={quote_plus(navigator_origin)}"
+                f"&destination={quote_plus(destination)}"
+                "&travelmode=walking"
+            )
+        else:
+            map_url = (
+                "https://www.google.com/maps/dir/?api=1"
+                f"&origin={quote_plus(navigator_origin)}"
+                f"&destination={quote_plus(name)}"
+                "&travelmode=walking"
+            )
+
+        combined_items.append(
+            {
+                "name": name,
+                "distance_min": option.get("distance_min"),
+                "dietary_tags": option.get("dietary_tags", []),
+                "vegan_evidence": bool(option.get("vegan_evidence")),
+                "coordinates": coords,
+                "source_url": option.get("source_url"),
+                "route_map_url": map_url,
+            }
+        )
+
+    if not combined_items:
+        return None
+
+    return {
+        "origin": navigator_origin,
+        "restaurants": combined_items,
+        "data_sources": {
+            "dining": dining.get("data_sources"),
+            "navigator": {"map_url": navigator.get("map_url")},
+        },
+    }
 
 
 def _build_visual_presentation(query: str, agents_used: list[str], agent_results: dict[str, Any]) -> dict[str, Any]:
     sections: list[dict[str, Any]] = []
     quick_actions: list[dict[str, Any]] = []
     highlights: list[str] = []
+    source_link_items: list[dict[str, Any]] = []
+    agent_detail_items: list[dict[str, Any]] = []
 
     activation_items: list[dict[str, Any]] = []
     error_count = 0
@@ -105,17 +274,41 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
             continue
 
         error = payload.get("error")
+        partial = False
+        if agent_name == "dining":
+            options = payload.get("options") if isinstance(payload.get("options"), list) else []
+            if not options and not error:
+                partial = True
         data_sources = payload.get("data_sources") if isinstance(payload.get("data_sources"), dict) else {}
         activation_items.append(
             {
                 "agent": agent_name,
-                "status": "error" if error else "ok",
+                "status": "error" if error else ("partial" if partial else "ok"),
                 "gemini_used": data_sources.get("gemini_used"),
                 "error": error,
             }
         )
         if error:
             error_count += 1
+
+        numeric = _agent_numeric_snapshot(agent_name, payload)
+        text_summary = ""
+        for text_key in ["ai_recommendation", "ai_summary", "suggestion", "warning", "completion_message"]:
+            text_value = payload.get(text_key)
+            if isinstance(text_value, str) and text_value.strip():
+                text_summary = text_value.strip()
+                break
+        links = _collect_links(payload)
+        for link in links[:8]:
+            source_link_items.append({"agent": agent_name, "url": link})
+        agent_detail_items.append(
+            {
+                "agent": agent_name,
+                "numeric": numeric,
+                "text_summary": text_summary,
+                "source_link_count": len(links),
+            }
+        )
 
     sections.append(
         {
@@ -132,7 +325,7 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
 
     dining = agent_results.get("dining") if isinstance(agent_results.get("dining"), dict) else {}
     dining_options = dining.get("options", []) if isinstance(dining.get("options"), list) else []
-    if dining_options:
+    if dining:
         sections.append(
             {
                 "id": "dining",
@@ -143,14 +336,21 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
                 "meta": {
                     "menu_recommendations": dining.get("menu_recommendations", []),
                     "route_preview": dining.get("route_preview"),
+                    "warning": dining.get("warning"),
+                    "follow_up_questions": dining.get("follow_up_questions", []),
                 },
             }
         )
-        highlights.append(f"Found {len(dining_options)} dining options")
+        if dining_options:
+            highlights.append(f"Found {len(dining_options)} dining options")
+        elif dining.get("warning"):
+            highlights.append(str(dining.get("warning")))
         quick_actions.append({"label": "Open Dining Route", "agent": "dining", "action": "open_map", "target": dining.get("route_preview", {}).get("map_url")})
 
     navigator = agent_results.get("navigator") if isinstance(agent_results.get("navigator"), dict) else {}
     if navigator:
+        navigator_options = navigator.get("options", []) if isinstance(navigator.get("options"), list) else []
+        navigator_routes = navigator.get("routes_by_option", []) if isinstance(navigator.get("routes_by_option"), list) else []
         sections.append(
             {
                 "id": "navigation",
@@ -164,12 +364,37 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
                         "walk_minutes": navigator.get("walk_minutes"),
                         "steps": navigator.get("steps", []),
                         "map_url": navigator.get("map_url"),
+                        "options": navigator_options,
+                        "routes_by_option": navigator_routes,
                     }
                 ],
             }
         )
         highlights.append("Route and walking directions prepared")
         quick_actions.append({"label": "Open Campus Map", "agent": "navigator", "action": "open_map", "target": navigator.get("map_url")})
+        for route in navigator_routes[:5]:
+            if not isinstance(route, dict):
+                continue
+            destination_name = str(route.get("destination") or route.get("name") or "").strip()
+            map_url = route.get("map_url")
+            if destination_name and map_url:
+                quick_actions.append({"label": f"Route to {destination_name}", "agent": "navigator", "action": "open_map", "target": map_url})
+        if navigator_options:
+            destination = str(navigator.get("origin") or "current location")
+            for name in navigator_options[:3]:
+                quick_actions.append(
+                    {
+                        "label": f"Route to {name}",
+                        "agent": "navigator",
+                        "action": "open_map",
+                        "target": (
+                            "https://www.google.com/maps/dir/?api=1"
+                            f"&origin={quote_plus(destination)}"
+                            f"&destination={quote_plus(str(name))}"
+                            "&travelmode=walking"
+                        ),
+                    }
+                )
 
     events = agent_results.get("events") if isinstance(agent_results.get("events"), dict) else {}
     events_items = events.get("event_recommendations") or events.get("options") or events.get("events")
@@ -240,6 +465,38 @@ def _build_visual_presentation(query: str, agents_used: list[str], agent_results
                 "meta": {"cold_email": jobs.get("cold_email")},
             }
         )
+
+    if agent_detail_items:
+        sections.append(
+            {
+                "id": "agent_details",
+                "title": "Agent Details",
+                "agent": "system",
+                "style": "table",
+                "items": agent_detail_items,
+            }
+        )
+
+    if source_link_items:
+        sections.append(
+            {
+                "id": "sources",
+                "title": "Sources",
+                "agent": "system",
+                "style": "links",
+                "items": source_link_items[:24],
+            }
+        )
+        highlights.append(f"Collected {len(source_link_items)} source links")
+        for item in source_link_items[:3]:
+            quick_actions.append(
+                {
+                    "label": f"Open source ({item.get('agent')})",
+                    "agent": str(item.get("agent") or "system"),
+                    "action": "open_url",
+                    "target": item.get("url"),
+                }
+            )
 
     if not highlights:
         highlights.append("No agent results available yet")
@@ -328,6 +585,7 @@ def aggregate(
     execution_trace: list[dict[str, Any]] | None = None,
 ) -> QueryResponse:
     payload = _normalize_results_for_schema(agent_results)
+    combined_output = _build_combined_output(agent_results)
     presentation = _build_visual_presentation(query, agents_used, agent_results)
     agent_execution = {
         "active_agents": agents_used,
@@ -341,4 +599,5 @@ def aggregate(
         presentation=presentation,
         agent_execution=agent_execution,
         agent_outputs={k: v for k, v in agent_results.items() if k in RESULT_KEYS},
+        combined_output=combined_output,
     )

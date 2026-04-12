@@ -21,15 +21,6 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "supplies": ["supplies", "school supplies", "notebook", "printer", "printing"],
 }
 
-DEFAULT_CATEGORY_BASELINES = {
-    "dining": 65.0,
-    "travel": 35.0,
-    "classes": 40.0,
-    "events": 25.0,
-    "housing": 110.0,
-    "supplies": 20.0,
-}
-
 TIMEFRAME_MULTIPLIERS = {
     "daily": 1 / 7,
     "weekly": 1.0,
@@ -82,8 +73,6 @@ def _extract_categories(text: str) -> list[str]:
     for category, keywords in CATEGORY_KEYWORDS.items():
         if any(keyword in lowered for keyword in keywords):
             selected.append(category)
-    if not selected:
-        return ["dining", "travel", "classes", "events"]
     return list(dict.fromkeys(selected))
 
 
@@ -163,10 +152,10 @@ def _estimate_category_cost(category: str, references: list[dict[str, Any]], tim
     for item in references:
         price_points.extend(item.get("price_points", []))
 
-    if price_points:
-        base = statistics.median(price_points)
-    else:
-        base = DEFAULT_CATEGORY_BASELINES.get(category, 30.0)
+    if not price_points:
+        return -1.0
+
+    base = statistics.median(price_points)
 
     if timeframe == "per_meal":
         meal_base = base if price_points else max(6.0, base / 6.0)
@@ -206,18 +195,23 @@ def _build_spending_plan(
     timeframe: str,
     budget: float | None,
     web_references: dict[str, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], float]:
+) -> tuple[list[dict[str, Any]], float, list[str]]:
     estimated_total = 0.0
     estimated_by_category: dict[str, float] = {}
+    insufficient_categories: list[str] = []
     for category in categories:
         estimate = _estimate_category_cost(category, web_references.get(category, []), timeframe)
+        if estimate < 0:
+            insufficient_categories.append(category)
+            continue
         estimated_by_category[category] = estimate
         estimated_total += estimate
 
-    weights = _allocation_weights(categories)
+    alloc_categories = [c for c in categories if c in estimated_by_category]
+    weights = _allocation_weights(alloc_categories)
     plan: list[dict[str, Any]] = []
 
-    for category in categories:
+    for category in alloc_categories:
         if budget is not None:
             recommended = round(budget * weights.get(category, 0.0), 2)
         else:
@@ -239,7 +233,7 @@ def _build_spending_plan(
             }
         )
 
-    return plan, round(estimated_total, 2)
+    return plan, round(estimated_total, 2), insufficient_categories
 
 
 def _build_suggestion(plan: list[dict[str, Any]], budget: float | None, estimated_total: float, timeframe: str) -> str:
@@ -292,7 +286,32 @@ async def _generate_ai_budget_strategy(
 
 
 async def run(context: dict) -> dict:
-    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "")
+    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "").strip()
+    if not user_message:
+        return {
+            "agent": "finance",
+            "weekly_spent": None,
+            "budget_remaining": None,
+            "timeframe": "unknown",
+            "categories": [],
+            "budget": None,
+            "estimated_total": 0.0,
+            "spending_plan": [],
+            "web_references": {},
+            "data_sources": {
+                "web_search_used": False,
+                "search_provider": "duckduckgo_html",
+                "total_reference_hits": 0,
+                "gemini_used": False,
+            },
+            "error": "Finance agent requires a clear budgeting request in the prompt.",
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "What spending categories should be planned (for example dining, travel, classes, housing)?",
+                "What timeframe and target budget should I optimize for?",
+            ],
+        }
+
     combined_text = " ".join(
         part
         for part in [
@@ -309,6 +328,29 @@ async def run(context: dict) -> dict:
 
     timeframe = _extract_timeframe(combined_text)
     categories = _extract_categories(combined_text)
+    if not categories:
+        return {
+            "agent": "finance",
+            "weekly_spent": None,
+            "budget_remaining": None,
+            "timeframe": timeframe,
+            "categories": [],
+            "budget": budget,
+            "estimated_total": 0.0,
+            "spending_plan": [],
+            "web_references": {},
+            "data_sources": {
+                "web_search_used": False,
+                "search_provider": "duckduckgo_html",
+                "total_reference_hits": 0,
+                "gemini_used": False,
+            },
+            "error": "No budget categories were detected from the prompt.",
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "Which categories should be included (dining, travel, classes, events, housing, supplies)?",
+            ],
+        }
 
     web_references: dict[str, list[dict[str, Any]]] = {}
     for category in categories:
@@ -316,13 +358,35 @@ async def run(context: dict) -> dict:
         references = await asyncio.to_thread(_search_web_cost_signals, query)
         web_references[category] = references
 
-    spending_plan, estimated_total = _build_spending_plan(categories, timeframe, budget, web_references)
+    spending_plan, estimated_total, insufficient_categories = _build_spending_plan(categories, timeframe, budget, web_references)
 
-    weekly_spent = _to_float(context.get("weekly_spent"), 47.5) or 47.5
-    # Keep this legacy field for compatibility with existing consumers.
-    budget_remaining = (
-        round(max(0.0, budget - min(estimated_total, budget)), 2) if budget is not None else round(max(0.0, 100.0 - weekly_spent), 2)
-    )
+    if not spending_plan:
+        return {
+            "agent": "finance",
+            "weekly_spent": None,
+            "budget_remaining": None,
+            "timeframe": timeframe,
+            "categories": categories,
+            "budget": budget,
+            "estimated_total": 0.0,
+            "spending_plan": [],
+            "web_references": web_references,
+            "data_sources": {
+                "web_search_used": any(bool(v) for v in web_references.values()),
+                "search_provider": "duckduckgo_html",
+                "total_reference_hits": sum(len(values) for values in web_references.values()),
+                "gemini_used": False,
+            },
+            "error": "Insufficient live pricing evidence was found for requested categories.",
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "Try narrowing categories or adding more specific keywords (for example UMD dining meal cost).",
+                "Share exact categories and budget caps so I can re-query with tighter terms.",
+            ],
+        }
+
+    weekly_spent = _to_float(context.get("weekly_spent"), None)
+    budget_remaining = round(max(0.0, budget - min(estimated_total, budget)), 2) if budget is not None else None
 
     all_reference_count = sum(len(values) for values in web_references.values())
 
@@ -335,7 +399,7 @@ async def run(context: dict) -> dict:
 
     response = {
         "agent": "finance",
-        "weekly_spent": round(weekly_spent, 2),
+        "weekly_spent": round(weekly_spent, 2) if weekly_spent is not None else None,
         "budget_remaining": budget_remaining,
         "timeframe": timeframe,
         "categories": categories,
@@ -355,6 +419,9 @@ async def run(context: dict) -> dict:
             "Should I rebalance with strict caps by category (for example dining <= 40% of total)?",
         ],
     }
+    if insufficient_categories:
+        response["insufficient_categories"] = insufficient_categories
+        response["warning"] = "Some categories were omitted because live price evidence was insufficient."
     if ai_strategy is not None:
         response["ai_strategy"] = ai_strategy.strip()
     if ai_error is not None and strict_live_mode_enabled():

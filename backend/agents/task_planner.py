@@ -29,6 +29,7 @@ RULES:
 3. Expand abbreviations and unclear terms
 4. Extract important details like dates, locations, amounts 
 5. Keep it concise but explicit
+6. If the query is dietary shorthand (e.g., "vegan options near me"), rewrite it as a dining request near the user's current location.
 
 User query: {user_message}
 
@@ -58,6 +59,8 @@ ANALYSIS INSTRUCTIONS:
 6. Activate schedule ONLY for explicit academic planning/course/time-table requests.
 7. Activate study_resources ONLY for explicit requests for tutoring/professors/office hours/resources.
 8. If no agent is clearly required, return an empty tasks array.
+9. Dietary-food queries (vegan/vegetarian/halal/gluten-free/kosher + food/options/place to eat) map to dining.
+10. "near me" or location-based dining requests should include navigator for route support.
 
 Query: {enriched_message}
 
@@ -80,6 +83,31 @@ Return ONLY valid JSON, no other text.
 """.strip()
 
 
+DIETARY_TERMS = [
+    "vegan",
+    "vegetarian",
+    "halal",
+    "kosher",
+    "gluten free",
+    "gluten-free",
+    "plant based",
+    "plant-based",
+]
+
+
+NEARBY_LOCATION_TERMS = [
+    "near me",
+    "nearby",
+    "near me?",
+    "around me",
+    "close by",
+    "closest",
+    "near",
+    "around",
+    "by me",
+]
+
+
 def _fallback_enrich_message(user_message: str) -> str:
     """Fallback message enrichment using simple rules."""
     enhance = f"User needs: {user_message}"
@@ -98,8 +126,25 @@ def _fallback_enrich_message(user_message: str) -> str:
         if location_match:
             loc = location_match.group(1) or location_match.group(2)
             enhance += f" | Location context: {loc}"
+
+    lowered = user_message.lower()
+    if any(term in lowered for term in DIETARY_TERMS):
+        enhance += " | Dining intent with dietary constraints"
+        if "near me" in lowered:
+            enhance += " | Use current user location"
     
     return enhance
+
+
+def _normalize_enriched_message(text: str, fallback: str) -> str:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("text"):
+            cleaned = cleaned[4:].strip()
+    cleaned = re.sub(r"^\s*rewritten\s+query\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or fallback
 
 
 def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlannerResponse:
@@ -108,6 +153,7 @@ def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlanner
         enriched_message = _fallback_enrich_message(user_message)
     
     text = user_message.lower()
+    combined_text = f"{user_message} {enriched_message}".lower()
     tasks: list[str] = []
     constraints: dict[str, Any] = {}
 
@@ -121,7 +167,11 @@ def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlanner
     # Keyword-based agent activation
     if any(k in text for k in ["exam", "deadline", "study", "assignment", "quiz", "class", "schedule"]):
         tasks.append("schedule")
-    if any(k in text for k in ["eat", "dining", "food", "lunch", "dinner", "breakfast", "restaurant", "cafe"]):
+    if any(k in combined_text for k in ["eat", "dining", "food", "lunch", "dinner", "breakfast", "restaurant", "cafe", "meal", "options", "place to eat"]):
+        tasks.append("dining")
+    if "coffee" in combined_text:
+        tasks.append("dining")
+    if any(term in combined_text for term in DIETARY_TERMS):
         tasks.append("dining")
     if any(k in text for k in ["event", "club", "workshop", "seminar", "talk", "concert", "movie"]):
         tasks.append("events")
@@ -164,12 +214,15 @@ def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlanner
         k in text
         for k in [
             "where is",
+            "get to",
+            "how do i get to",
             "navigate",
             "directions",
             "walk to",
             "map",
             "location",
             "building",
+            "library",
             "route me",
             "route me there",
             "get me there",
@@ -185,12 +238,19 @@ def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlanner
         if location_match:
             loc = location_match.group(1).strip(" .,")
             constraints["location"] = loc
-    if any(k in text for k in ["tutor", "office hours", "study resources", "help", "learn"]):
+    if any(term in combined_text for term in DIETARY_TERMS) and any(term in combined_text for term in NEARBY_LOCATION_TERMS):
+        if "dining" not in tasks:
+            tasks.append("dining")
+        if "navigator" not in tasks:
+            tasks.append("navigator")
+    if any(k in text for k in ["tutor", "office hours", "study resources", "help", "learn", "quiet study", "study spot", "study spots"]):
         tasks.append("study_resources")
     if any(k in text for k in ["job", "internship", "research", "lab", "resume", "career", "hiring"]):
         tasks.append("jobs_research")
 
     tasks = _enforce_precise_agent_activation(tasks, user_message, enriched_message)
+    tasks = _enforce_navigation_intent(tasks, user_message, enriched_message)
+    tasks = _enforce_finance_intent(tasks, user_message, enriched_message)
 
     deadline_mentioned = any(k in text for k in ["tomorrow", "deadline", "due", "exam", "quiz", "today", "tonight", "urgent"])
     
@@ -265,6 +325,7 @@ def _node_enrich_message(state: PlannerGraphState) -> PlannerGraphState:
     fallback = _fallback_enrich_message(user_message)
     try:
         enriched = call_gemini(prompt, "gemini-3.1-flash-lite", 4).strip()
+        enriched = _normalize_enriched_message(enriched, fallback)
         return {
             "enriched_message": enriched or fallback,
             "ai_enrichment_used": bool(enriched and enriched != fallback),
@@ -283,6 +344,15 @@ def _node_route_tasks(state: PlannerGraphState) -> PlannerGraphState:
     try:
         raw = call_gemini(prompt, "gemini-3.1-flash-lite", 6)
         parsed = _parse_planner_json(raw)
+        if not parsed.tasks and any(term in enriched_message.lower() for term in DIETARY_TERMS):
+            recovery_prompt = (
+                TASK_PLANNER_PROMPT.format(enriched_message=enriched_message)
+                + "\nImportant: This request includes dietary constraints and is actionable. Select at least one agent if possible."
+            )
+            recovery_raw = call_gemini(recovery_prompt, "gemini-3.1-flash-lite", 6)
+            recovery_parsed = _parse_planner_json(recovery_raw)
+            if recovery_parsed.tasks:
+                parsed = recovery_parsed
         return {
             "tasks": parsed.tasks,
             "priority": parsed.priority,
@@ -342,6 +412,11 @@ def _enforce_navigation_intent(tasks: list[str], user_message: str, enriched_mes
             "where to eat",
             "food",
             "meal",
+            "vegan",
+            "vegetarian",
+            "halal",
+            "gluten-free",
+            "gluten free",
         ]
     )
     location_qualified = bool(
@@ -490,12 +565,35 @@ def _enforce_precise_agent_activation(tasks: list[str], user_message: str, enric
             "dinner",
             "lunch",
             "breakfast",
+            "coffee",
             "restaurant",
             "cafe",
             "where to eat",
             "meal",
             "food options",
             "place to eat",
+            "vegan",
+            "vegetarian",
+            "halal",
+            "gluten-free",
+            "gluten free",
+        ]
+    )
+    finance_intent = any(
+        token in combined_text
+        for token in [
+            "budget",
+            "money",
+            "cost",
+            "price",
+            "spend",
+            "spending",
+            "expense",
+            "financial",
+            "afford",
+            "savings",
+            "save",
+            "under $",
         ]
     )
 
@@ -506,6 +604,34 @@ def _enforce_precise_agent_activation(tasks: list[str], user_message: str, enric
         filtered = [task for task in filtered if task != "study_resources"]
     if "dining" in filtered and events_intent and not dining_place_intent:
         filtered = [task for task in filtered if task != "dining"]
+    if "finance" in filtered and not finance_intent:
+        filtered = [task for task in filtered if task != "finance"]
+
+    dietary_dining_intent = any(term in combined_text for term in DIETARY_TERMS) and any(
+        token in combined_text for token in ["options", "places", "place", "food", "eat", "eatery", "restaurant", "cafe", "meal"]
+    )
+    nearby_dining_intent = dietary_dining_intent and any(term in combined_text for term in NEARBY_LOCATION_TERMS)
+
+    if nearby_dining_intent and "dining" not in filtered:
+        filtered.append("dining")
+    if nearby_dining_intent and "navigator" not in filtered:
+        filtered.append("navigator")
+
+    navigation_only_intent = any(
+        token in combined_text
+        for token in ["how do i get to", "get to", "directions", "where is", "navigate", "route", "library"]
+    ) and not dining_place_intent
+    quiet_study_intent = any(token in combined_text for token in ["quiet study", "study spot", "study spots"]) and not dining_place_intent
+
+    if navigation_only_intent:
+        filtered = [task for task in filtered if task != "dining"]
+        if "navigator" not in filtered:
+            filtered.append("navigator")
+
+    if quiet_study_intent:
+        filtered = [task for task in filtered if task != "dining"]
+        if "study_resources" not in filtered:
+            filtered.append("study_resources")
 
     return filtered
 
@@ -513,11 +639,12 @@ def _enforce_precise_agent_activation(tasks: list[str], user_message: str, enric
 async def _enrich_message_with_gemini(user_message: str) -> str:
     """Use Gemini to rewrite user message descriptively."""
     prompt = MESSAGE_ENRICHMENT_PROMPT.format(user_message=user_message)
+    fallback = _fallback_enrich_message(user_message)
     try:
         enriched = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 4)
-        return enriched.strip() if enriched else _fallback_enrich_message(user_message)
+        return _normalize_enriched_message(enriched, fallback)
     except (GeminiClientError, Exception):
-        return _fallback_enrich_message(user_message)
+        return fallback
 
 
 async def run(user_message: str) -> TaskPlannerResponse:
@@ -529,39 +656,23 @@ async def run(user_message: str) -> TaskPlannerResponse:
     4. Returns context for each agent
     """
     
-    if PLANNER_GRAPH is not None:
-        try:
-            graph_state = await asyncio.to_thread(PLANNER_GRAPH.invoke, {"user_message": user_message})
-            enriched_message = str(graph_state.get("enriched_message") or _fallback_enrich_message(user_message))
-            context_data = graph_state.get("context") or {
-                "budget": None,
-                "deadline_mentioned": False,
-                "location_mentioned": None,
-            }
-            response = TaskPlannerResponse(
-                tasks=list(graph_state.get("tasks") or []),
-                priority=str(graph_state.get("priority") or "medium"),
-                context=TaskPlannerContext(**context_data),
-            )
-            response.tasks = _enforce_navigation_intent(response.tasks, user_message, enriched_message)
-            response.tasks = _enforce_finance_intent(response.tasks, user_message, enriched_message)
-            response.tasks = _enforce_precise_agent_activation(response.tasks, user_message, enriched_message)
-            response.context.enriched_query = enriched_message  # type: ignore
-            response.context.ai_enrichment_used = bool(graph_state.get("ai_enrichment_used"))  # type: ignore
-            response.context.ai_routing_used = bool(graph_state.get("ai_routing_used"))  # type: ignore
-            response.context.ai_error = graph_state.get("ai_error")  # type: ignore
-            return response
-        except Exception:
-            pass
-
-    # Fallback path when LangGraph is unavailable or graph execution fails.
+    # Prefer retry-based async AI calls for both rewrite and routing to minimize fallback behavior.
     enriched_message = await _enrich_message_with_gemini(user_message)
     enrichment_used_ai = enriched_message != _fallback_enrich_message(user_message)
     prompt = TASK_PLANNER_PROMPT.format(enriched_message=enriched_message)
 
     try:
-        raw = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 6)
+        raw = await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 10)
         response = _parse_planner_json(raw)
+        if not response.tasks and any(term in enriched_message.lower() for term in DIETARY_TERMS):
+            recovery_prompt = (
+                TASK_PLANNER_PROMPT.format(enriched_message=enriched_message)
+                + "\nImportant: This request includes dietary constraints and is actionable. Select at least one agent if possible."
+            )
+            recovery_raw = await call_gemini_with_retry(recovery_prompt, "gemini-3.1-flash-lite", 10)
+            recovery = _parse_planner_json(recovery_raw)
+            if recovery.tasks:
+                response = recovery
         response.tasks = _enforce_navigation_intent(response.tasks, user_message, enriched_message)
         response.tasks = _enforce_finance_intent(response.tasks, user_message, enriched_message)
         response.tasks = _enforce_precise_agent_activation(response.tasks, user_message, enriched_message)

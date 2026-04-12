@@ -1,5 +1,11 @@
 import { QueryResponse, QueryTimelineEvent } from './types';
 
+export interface QuerySubmitContext {
+  user_location?: string;
+  current_location_coords?: { latitude: number; longitude: number };
+  location_permission_granted?: boolean;
+}
+
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8020';
 const LOCAL_FALLBACK_API_URLS = ['http://127.0.0.1:8020', 'http://localhost:8000'];
 
@@ -29,9 +35,18 @@ async function readErrorResponse(response: Response) {
   }
 }
 
-export async function submitQuery(message: string): Promise<QueryResponse> {
+export async function submitQuery(message: string, submitContext?: QuerySubmitContext): Promise<QueryResponse> {
   const candidates = getApiBaseUrlCandidates();
-  const requestBody = JSON.stringify({ message });
+  const requestBody = JSON.stringify({
+    message,
+    ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
+    ...(submitContext?.current_location_coords
+      ? { current_location_coords: submitContext.current_location_coords }
+      : {}),
+    ...(typeof submitContext?.location_permission_granted === 'boolean'
+      ? { location_permission_granted: submitContext.location_permission_granted }
+      : {}),
+  });
   let lastError: Error | null = null;
 
   for (const baseUrl of candidates) {
@@ -62,6 +77,7 @@ export async function submitQuery(message: string): Promise<QueryResponse> {
 
 async function submitQueryViaWebSocket(
   message: string,
+  submitContext?: QuerySubmitContext,
   onEvent?: (event: QueryTimelineEvent) => void,
 ): Promise<QueryResponse> {
   return new Promise<QueryResponse>((resolve, reject) => {
@@ -87,6 +103,13 @@ async function submitQueryViaWebSocket(
           message,
           request_id: crypto.randomUUID?.() || `${Date.now()}`,
           debug_trace_context: true,
+          ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
+          ...(submitContext?.current_location_coords
+            ? { current_location_coords: submitContext.current_location_coords }
+            : {}),
+          ...(typeof submitContext?.location_permission_granted === 'boolean'
+            ? { location_permission_granted: submitContext.location_permission_granted }
+            : {}),
         }),
       );
     };
@@ -118,12 +141,13 @@ async function submitQueryViaWebSocket(
 
 export async function submitQueryWithProgress(
   message: string,
+  submitContext?: QuerySubmitContext,
   onEvent?: (event: QueryTimelineEvent) => void,
 ): Promise<QueryResponse> {
   try {
-    return await submitQueryViaWebSocket(message, onEvent);
+    return await submitQueryViaWebSocket(message, submitContext, onEvent);
   } catch {
     // Real-data fallback path: use HTTP query endpoint if websocket stream is unavailable.
-    return submitQuery(message);
+    return submitQuery(message, submitContext);
   }
 }

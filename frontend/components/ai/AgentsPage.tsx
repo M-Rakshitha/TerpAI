@@ -33,7 +33,7 @@ const agentColors: Record<string, string> = {
 export default function AgentsPage({ query, stages, response, revealed, onRevealSummary, onReset, statusLabel }: AgentsPageProps) {
   const visibleStages = stages.filter((stage) => ['Queued', 'Running', 'Completed', 'Attention'].includes(stage.status))
   const summaryTitle = response?.presentation?.summary?.title || 'TerpAI completed the workflow and returned the result below.'
-  const workflowComplete = Boolean(response) && !statusLabel?.toLowerCase().includes('error')
+  const workflowComplete = Boolean(response) && !response?.awaiting_user_input && !statusLabel?.toLowerCase().includes('error')
 
   const stepBadgeClass = (status: 'running' | 'completed' | 'failed' | 'queued') => {
     if (status === 'completed') return 'bg-[#DCFCE7] text-[#166534]'

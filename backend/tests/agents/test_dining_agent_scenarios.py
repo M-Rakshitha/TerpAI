@@ -146,7 +146,8 @@ async def test_dining_agent_falls_back_when_sources_fail(monkeypatch: pytest.Mon
 
     assert result["agent"] == "dining"
     assert isinstance(result.get("options"), list)
-    assert result["options"]
+    assert result.get("warning")
+    assert not result.get("error")
 
 
 @pytest.mark.asyncio
@@ -287,3 +288,62 @@ async def test_dining_agent_uses_nominatim_when_overpass_fails(monkeypatch: pyte
     assert options
     assert any(option.get("name") == "Green Bowl" for option in options)
     assert result.get("data_sources", {}).get("off_campus") == "nominatim_search"
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_returns_soft_no_results_when_sources_are_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dining_agent, "_fetch_live_dining_names", lambda: [])
+    monkeypatch.setattr(dining_agent, "_query_overpass_restaurants", lambda _lat, _lon, radius_m=2200: [])
+    monkeypatch.setattr(dining_agent, "_build_web_menu_options", lambda _location, _budget, _menu_preferences, _dietary_preferences: ([], "none", 0))
+    monkeypatch.setattr(dining_agent, "_enrich_options_with_web_evidence", lambda _options, _location, _budget, _menu_preferences: ([], 0))
+
+    result = await dining_agent.run({"user_message": "vegan options nearby"})
+
+    assert result["agent"] == "dining"
+    assert isinstance(result.get("options"), list)
+    assert result.get("options") == []
+    assert result.get("data_sources", {}).get("seed_fallback") is None
+    assert result.get("needs_user_input") is True
+    assert result.get("warning")
+    assert not result.get("error")
+
+
+@pytest.mark.asyncio
+async def test_dining_agent_coffee_near_me_uses_fastpath_off_campus(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dining_agent, "_geocode_location", lambda _location: (38.9869, -76.9426))
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_overpass_restaurants",
+        lambda _lat, _lon, radius_m=2200: [
+            {
+                "lat": 38.9872,
+                "lon": -76.9418,
+                "tags": {"name": "Vigilante Coffee", "cuisine": "cafe;coffee_shop"},
+            }
+        ],
+    )
+
+    # If these are called, fast path was not taken.
+    monkeypatch.setattr(
+        dining_agent,
+        "_fetch_live_dining_names",
+        lambda: (_ for _ in ()).throw(RuntimeError("campus branch should be skipped")),
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_build_web_menu_options",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("web branch should be skipped")),
+    )
+
+    result = await dining_agent.run(
+        {
+            "user_message": "best coffee near me",
+            "user_location": "38.985607126601685,-76.93969726626288",
+        }
+    )
+
+    options = result.get("options", [])
+    assert options
+    assert options[0].get("name") == "Vigilante Coffee"
+    assert result.get("data_sources", {}).get("campus") == "skipped_beverage_fastpath"
+    assert result.get("data_sources", {}).get("web_menu") == "skipped_beverage_fastpath"

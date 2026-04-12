@@ -36,6 +36,32 @@ FALLBACK_LOCATIONS_URLS = (
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 UMD_CAMPUS_CENTER = (38.9869, -76.9426)
+MAX_NEARBY_WALK_MIN = 35
+MAX_NEARBY_KM = 6.0
+
+FALLBACK_SEED_OPTIONS = [
+    {
+        "name": "NuVegan Cafe",
+        "query": "NuVegan Cafe College Park",
+        "estimated_meal_price": 14.0,
+        "dietary_tags": ["vegan", "plant-based"],
+        "menu_highlights": ["vegan bowls", "plant-based entrees"],
+    },
+    {
+        "name": "Gangster Vegan Organics",
+        "query": "Gangster Vegan Organics College Park",
+        "estimated_meal_price": 13.0,
+        "dietary_tags": ["vegan", "plant-based"],
+        "menu_highlights": ["vegan wraps", "plant-based comfort food"],
+    },
+    {
+        "name": "PLNT Burger (College Park)",
+        "query": "PLNT Burger College Park",
+        "estimated_meal_price": 12.0,
+        "dietary_tags": ["vegan", "plant-based"],
+        "menu_highlights": ["vegan burgers", "fries"],
+    },
+]
 
 DIETARY_KEYWORDS = {
     "vegan": ["vegan", "plant-based"],
@@ -61,39 +87,15 @@ MENU_KEYWORDS = [
     "dinner",
 ]
 
-KNOWN_DINING_HALLS = {
-    "South Campus Dining": {
-        "distance_min": 5,
-        "estimated_meal_price": 12.0,
-        "dietary_tags": ["vegan", "halal", "gluten-free"],
-        "menu_highlights": ["salad", "grill", "rice bowls"],
-        "coords": (38.9839, -76.9446),
-    },
-    "Yahentamitsi Dining Hall": {
-        "distance_min": 8,
-        "estimated_meal_price": 13.0,
-        "dietary_tags": ["vegetarian", "vegan"],
-        "menu_highlights": ["global cuisine", "noodles", "protein bowls"],
-        "coords": (38.9907, -76.9378),
-    },
-    "251 North Dining": {
-        "distance_min": 8,
-        "estimated_meal_price": 10.0,
-        "dietary_tags": ["vegetarian"],
-        "menu_highlights": ["pizza", "sandwiches", "dessert"],
-        "coords": (38.9888, -76.9451),
-    },
-}
-
 try:
     _MAX_EXTERNAL_HTTP_PER_MIN = max(1, int(os.getenv("DINING_HTTP_MAX_REQUESTS_PER_MINUTE", "12")))
 except (TypeError, ValueError):
     _MAX_EXTERNAL_HTTP_PER_MIN = 12
 
 try:
-    _DINING_PIPELINE_TIMEOUT_SECONDS = max(12.0, float(os.getenv("DINING_PIPELINE_TIMEOUT_SECONDS", "45")))
+    _DINING_PIPELINE_TIMEOUT_SECONDS = max(12.0, float(os.getenv("DINING_PIPELINE_TIMEOUT_SECONDS", "22")))
 except (TypeError, ValueError):
-    _DINING_PIPELINE_TIMEOUT_SECONDS = 45.0
+    _DINING_PIPELINE_TIMEOUT_SECONDS = 22.0
 
 _HTTP_MIN_INTERVAL_SECONDS = 60.0 / float(_MAX_EXTERNAL_HTTP_PER_MIN)
 _HTTP_RATE_LOCK = threading.Lock()
@@ -168,18 +170,27 @@ def _safe_float(value: object, fallback: float) -> float:
         return fallback
 
 
-def _is_open_by_default_hours() -> bool:
-    return 7 <= datetime.now().hour <= 22
-
-
 def _extract_dining_names_from_locations_page(html: str) -> list[str]:
-    text = re.sub(r"<[^>]+>", " ", html)
-    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    text_nodes = re.findall(r">([^<>]{3,100})<", html)
     found: list[str] = []
-    for hall_name in KNOWN_DINING_HALLS:
-        if hall_name.lower() in normalized:
-            found.append(hall_name)
-    return found
+    for raw in text_nodes:
+        name = re.sub(r"\s+", " ", raw).strip()
+        lowered = name.lower()
+        if len(name) < 5:
+            continue
+        if any(token in lowered for token in ["dining", "cafe", "grill", "kitchen", "market", "food", "hall"]):
+            if not any(noise in lowered for noise in ["hours", "location", "menu", "open", "closed", "contact", "directions"]):
+                found.append(name)
+    # Keep first occurrence order while deduplicating.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in found:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(name)
+    return unique[:20]
 
 
 def _search_links(query: str, limit: int = 6) -> list[dict[str, str]]:
@@ -384,12 +395,27 @@ def _enrich_options_with_web_evidence(
 
 
 def _extract_dining_names_from_search_results(results: list[dict[str, str]]) -> list[str]:
-    combined = " ".join(f"{item.get('title', '')} {item.get('url', '')}" for item in results).lower()
     found: list[str] = []
-    for hall_name in KNOWN_DINING_HALLS:
-        if hall_name.lower() in combined:
-            found.append(hall_name)
-    return found
+    for item in results:
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip().lower()
+        if not title:
+            continue
+        lowered_title = title.lower()
+        if not any(tok in lowered_title or tok in url for tok in ["umd", "maryland", "college park", "dining"]):
+            continue
+        candidate = _title_to_place_name(title)
+        if candidate and _is_probable_restaurant_name(candidate):
+            found.append(candidate)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for name in found:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(name)
+    return unique[:20]
 
 
 def _extract_price_hint(text: str) -> float | None:
@@ -417,6 +443,19 @@ def _extract_price_hint(text: str) -> float | None:
 
 def _title_to_place_name(title: str) -> str:
     cleaned = re.sub(r"\s+", " ", title).strip()
+    lowered_cleaned = cleaned.lower()
+    if any(
+        phrase in lowered_cleaned
+        for phrase in [
+            "best dinner near me",
+            "best dinner near",
+            "the 10 best places near",
+            "menus nearby",
+            "best places near",
+            "restaurants near me",
+        ]
+    ):
+        return ""
     parts = re.split(r"\s[-|:]\s", cleaned)
     if not parts:
         return cleaned
@@ -447,9 +486,8 @@ def _is_location_relevant(title: str, url: str, location_hint: str | None) -> bo
     if any(tok in blob for tok in ["middlebury", "connecticut", "vt 057", "vermont"]):
         return False
 
-    # Many official restaurant pages do not include city/state tokens in title/url.
-    # If we don't see explicit out-of-area signals, keep them as potentially relevant.
-    return True
+    # If there is no UMD/College Park relevance signal, reject.
+    return False
 
 
 def _is_low_quality_listing(title: str, url: str, location_hint: str | None) -> bool:
@@ -478,12 +516,70 @@ def _is_low_quality_listing(title: str, url: str, location_hint: str | None) -> 
         return True
     if any(token in blob for token in ["updated april", "with menus, reviews, photos"]):
         return True
+    if any(
+        phrase in normalized_title
+        for phrase in [
+            "best dinner near me",
+            "best dinner near",
+            "the 10 best places near",
+            "menus nearby",
+            "nearby menus",
+        ]
+    ):
+        return True
     if not _is_location_relevant(title, url, location_hint):
         return True
     return False
 
 
-def _build_web_menu_options(location: str | None, budget: float | None, menu_preferences: list[str]) -> tuple[list[dict[str, Any]], str, int]:
+def _option_has_vegan_evidence(option: dict[str, Any]) -> bool:
+    dietary_tags = [str(tag).lower() for tag in option.get("dietary_tags", [])]
+    if any(tag in {"vegan", "plant-based", "plant based"} for tag in dietary_tags):
+        return True
+
+    menu_highlights = " ".join(str(item).lower() for item in option.get("menu_highlights", []))
+    if any(token in menu_highlights for token in ["vegan", "plant-based", "plant based"]):
+        return True
+
+    menu_items = option.get("menu_items_under_budget", [])
+    for item in menu_items:
+        if isinstance(item, dict):
+            name = str(item.get("item", "")).lower()
+            if any(token in name for token in ["vegan", "plant-based", "plant based"]):
+                return True
+
+    evidence_snippet = str(option.get("menu_evidence_snippet", "")).lower()
+    if any(token in evidence_snippet for token in ["vegan", "plant-based", "plant based"]):
+        return True
+
+    return False
+
+
+def _is_option_near_campus(option: dict[str, Any]) -> bool:
+    source = str(option.get("source", "")).lower()
+    if source == "campus":
+        return True
+
+    coords = option.get("coords")
+    if isinstance(coords, tuple) and len(coords) == 2:
+        lat = _safe_float(coords[0], UMD_CAMPUS_CENTER[0])
+        lon = _safe_float(coords[1], UMD_CAMPUS_CENTER[1])
+        km = _haversine_distance_km(UMD_CAMPUS_CENTER[0], UMD_CAMPUS_CENTER[1], lat, lon)
+        return km <= MAX_NEARBY_KM
+
+    distance_min = option.get("distance_min")
+    if isinstance(distance_min, (int, float)):
+        return float(distance_min) <= MAX_NEARBY_WALK_MIN
+
+    return False
+
+
+def _build_web_menu_options(
+    location: str | None,
+    budget: float | None,
+    menu_preferences: list[str],
+    dietary_preferences: list[str],
+) -> tuple[list[dict[str, Any]], str, int]:
     location_hint = location or "Reckord Armory University of Maryland"
     query_set = [
         f"restaurants near {location_hint} menu prices",
@@ -491,6 +587,9 @@ def _build_web_menu_options(location: str | None, budget: float | None, menu_pre
         f"site:maps.google.com near {location_hint} restaurants",
         f"site:dining.umd.edu {location_hint} dining hall menu",
     ]
+    for dietary in dietary_preferences[:2]:
+        query_set.append(f"{dietary} restaurants near {location_hint} menu")
+        query_set.append(f"{dietary} options {location_hint} restaurant")
     if menu_preferences:
         query_set.append(f"{' '.join(menu_preferences[:2])} near {location_hint} menu")
 
@@ -528,18 +627,15 @@ def _build_web_menu_options(location: str | None, budget: float | None, menu_pre
             continue
 
         text_blob = f"{title} {url} {page_text[:6000]}"
+        lowered_blob = text_blob.lower()
         price = _extract_price_hint(text_blob)
         menu_items_under_budget = _extract_menu_items_with_prices(page_text, budget)
         if price is None and menu_items_under_budget:
             avg = sum(float(item["price"]) for item in menu_items_under_budget) / max(1, len(menu_items_under_budget))
             price = round(avg, 2)
         if price is None:
-            # Keep evidence-backed candidates when explicit prices are missing.
-            inferred = 14.0 if "menu" in text_blob.lower() or "restaurant" in text_blob.lower() else None
-            if inferred is None:
-                failures += 1
-                continue
-            price = inferred
+            failures += 1
+            continue
 
         menu_highlights = [pref for pref in menu_preferences if pref in text_blob.lower()]
         if not menu_highlights:
@@ -548,17 +644,29 @@ def _build_web_menu_options(location: str | None, budget: float | None, menu_pre
                     menu_highlights.append(token)
             menu_highlights = list(dict.fromkeys(menu_highlights))
 
+        dietary_tags: list[str] = []
+        for label, needles in DIETARY_KEYWORDS.items():
+            if any(needle in lowered_blob for needle in needles):
+                dietary_tags.append(label)
+
+        if dietary_preferences:
+            requested = {str(item).lower() for item in dietary_preferences if str(item).strip()}
+            if requested and not requested.intersection(set(dietary_tags)):
+                failures += 1
+                continue
+
         if name not in deduped:
             deduped[name] = {
                 "name": name,
                 "distance_min": 12,
                 "budget_ok": budget is None or budget >= price,
                 "hours_open": True,
-                "dietary_tags": [],
+                "dietary_tags": dietary_tags,
                 "menu_highlights": menu_highlights[:4],
                 "estimated_meal_price": round(price, 2),
                 "source": "web_menu",
                 "web_reference": {"title": title, "url": url},
+                "source_url": url,
                 "menu_items_under_budget": menu_items_under_budget[:6],
                 "menu_evidence_snippet": page_text[:700],
             }
@@ -646,6 +754,22 @@ def _extract_dietary_from_message(message: str) -> list[str]:
 def _extract_menu_preferences(message: str) -> list[str]:
     lowered = message.lower()
     return [k for k in MENU_KEYWORDS if k in lowered]
+
+
+def _is_nearby_beverage_fastpath(
+    message: str,
+    *,
+    budget: float | None,
+    dietary_preferences: list[str],
+    user_location: str | None,
+) -> bool:
+    lowered = (message or "").lower()
+    near_terms = ["near me", "nearby", "around me", "close by", "walking distance"]
+    beverage_terms = ["coffee", "cafe", "tea", "espresso"]
+    asks_nearby = any(term in lowered for term in near_terms)
+    asks_beverage = any(term in lowered for term in beverage_terms)
+    has_constraints = bool(dietary_preferences) or (budget is not None)
+    return asks_nearby and asks_beverage and bool(user_location) and not has_constraints
 
 
 def _extract_origin_from_message(message: str) -> str | None:
@@ -754,30 +878,19 @@ def _build_option(
     source: str = "campus",
     origin_coords: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
-    defaults = KNOWN_DINING_HALLS.get(
-        name,
-        {
-            "distance_min": 10,
-            "estimated_meal_price": 12.0,
-            "dietary_tags": [],
-            "menu_highlights": [],
-            "coords": UMD_CAMPUS_CENTER,
-        },
-    )
-    estimated_price = _safe_float(defaults.get("estimated_meal_price"), 12.0)
-    coords = defaults.get("coords", UMD_CAMPUS_CENTER)
-    distance_min = int(defaults.get("distance_min", 10))
-    if source == "campus" and origin_coords is not None and isinstance(coords, tuple) and len(coords) == 2:
+    coords: tuple[float, float] | None = None
+    distance_min: int | None = None
+    if source == "campus" and origin_coords is not None and coords is not None:
         distance_min = _estimate_walk_minutes(origin_coords, coords)
 
     return {
         "name": name,
         "distance_min": distance_min,
-        "budget_ok": budget is None or budget >= estimated_price,
-        "hours_open": _is_open_by_default_hours(),
-        "dietary_tags": list(defaults.get("dietary_tags", [])),
-        "menu_highlights": list(defaults.get("menu_highlights", [])),
-        "estimated_meal_price": estimated_price,
+        "budget_ok": None,
+        "hours_open": None,
+        "dietary_tags": [],
+        "menu_highlights": [],
+        "estimated_meal_price": None,
         "source": source,
         "coords": coords,
     }
@@ -841,10 +954,7 @@ def _node_fetch_campus_options(state: DiningState) -> DiningState:
         names = []
         failures = 3
     if not names and not strict_live_mode_enabled():
-        # Non-strict mode fallback: keep planner useful when live campus sources are flaky.
-        names = list(KNOWN_DINING_HALLS.keys())
-        source = "known_halls_fallback_after_live_failures"
-        failures = max(failures, 1)
+        names = []
     return {
         "campus_options": [
             _build_option(name, budget, source="campus", origin_coords=origin_coords)
@@ -939,6 +1049,19 @@ def _node_rank_options(state: DiningState) -> DiningState:
         state.get("campus_options", []) + state.get("off_campus_options", []) + state.get("web_menu_options", [])
     )
 
+    combined = [option for option in combined if _is_option_near_campus(option)]
+
+    if any(pref == "vegan" for pref in [str(item).lower() for item in dietary]):
+        filtered: list[dict[str, Any]] = []
+        for option in combined:
+            source = str(option.get("source", "")).lower()
+            if source == "campus":
+                filtered.append(option)
+                continue
+            if _option_has_vegan_evidence(option):
+                filtered.append(option)
+        combined = filtered
+
     def _score(option: dict[str, Any]) -> float:
         score = 0.0
         if option.get("budget_ok", False):
@@ -970,6 +1093,17 @@ def _node_build_route_preview(state: DiningState) -> DiningState:
     selected_name = state.get("selected_option")
 
     if not ranked:
+        if user_location:
+            generic_destination = "University of Maryland dining options"
+            return {
+                "route_preview": {
+                    "origin": str(user_location),
+                    "destination": generic_destination,
+                    "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(generic_destination)}",
+                },
+                "needs_user_input": True,
+                "follow_up_questions": ["Share a restaurant or dining hall name for exact walking directions."],
+            }
         return {"route_preview": None, "needs_user_input": False, "follow_up_questions": []}
 
     selected = None
@@ -1013,10 +1147,16 @@ def _node_build_result(state: DiningState) -> DiningState:
     options = [
         {
             "name": opt.get("name"),
-            "distance_min": int(opt.get("distance_min", 10)),
-            "budget_ok": bool(opt.get("budget_ok", False)),
-            "hours_open": bool(opt.get("hours_open", True)),
+            "distance_min": int(opt.get("distance_min")) if isinstance(opt.get("distance_min"), (int, float)) else None,
+            "budget_ok": bool(opt.get("budget_ok")) if isinstance(opt.get("budget_ok"), bool) else None,
+            "hours_open": bool(opt.get("hours_open")) if isinstance(opt.get("hours_open"), bool) else None,
             "dietary_tags": list(opt.get("dietary_tags", [])),
+            "source_url": (opt.get("web_reference") or {}).get("url") if isinstance(opt.get("web_reference"), dict) else None,
+            "coordinates": [opt.get("coords")[0], opt.get("coords")[1]] if isinstance(opt.get("coords"), tuple) and len(opt.get("coords")) == 2 else None,
+            "vegan_evidence": _option_has_vegan_evidence(opt),
+            "route_map_url": opt.get("route_map_url"),
+            "route_description": opt.get("route_description"),
+            "route_walk_minutes": opt.get("route_walk_minutes"),
         }
         for opt in ranked
     ]
@@ -1028,7 +1168,18 @@ def _node_build_result(state: DiningState) -> DiningState:
             "estimated_meal_price": opt.get("estimated_meal_price"),
             "source": opt.get("source"),
             "web_reference": opt.get("web_reference"),
+            "source_url": (opt.get("web_reference") or {}).get("url") if isinstance(opt.get("web_reference"), dict) else None,
             "menu_items_under_budget": opt.get("menu_items_under_budget", []),
+            "detail_text": (
+                f"~{opt.get('distance_min')} min away; estimated meal ${opt.get('estimated_meal_price')} with highlights: "
+                f"{', '.join([str(x) for x in (opt.get('menu_highlights', []) or [])][:3]) or 'menu pending live scrape'}."
+            ),
+            "data_points": {
+                "distance_min": opt.get("distance_min"),
+                "estimated_meal_price": opt.get("estimated_meal_price"),
+                "budget_ok": opt.get("budget_ok"),
+                "menu_item_count": len(opt.get("menu_items_under_budget", []) or []),
+            },
         }
         for opt in ranked[:5]
     ]
@@ -1057,6 +1208,8 @@ def _node_build_result(state: DiningState) -> DiningState:
     }
     if web_references:
         result["web_references"] = web_references[:10]
+    if options:
+        result["option_names"] = [str(option.get("name")) for option in options[:8] if option.get("name")]
     if state.get("route_preview"):
         result["route_preview"] = state["route_preview"]
     if state.get("needs_user_input"):
@@ -1064,6 +1217,73 @@ def _node_build_result(state: DiningState) -> DiningState:
         result["follow_up_questions"] = state.get("follow_up_questions", [])
 
     return {"result": result}
+
+
+def _build_seed_fallback_options(budget: float | None, dietary_preferences: list[str]) -> list[dict[str, Any]]:
+    requested = {str(item).lower().strip() for item in dietary_preferences if str(item).strip()}
+    wants_vegan = "vegan" in requested or "plant-based" in requested or "plant based" in requested
+
+    fallback_items: list[dict[str, Any]] = []
+    for index, seed in enumerate(FALLBACK_SEED_OPTIONS):
+        if wants_vegan:
+            dietary_tags = [str(tag).lower() for tag in seed.get("dietary_tags", [])]
+            if "vegan" not in dietary_tags and "plant-based" not in dietary_tags:
+                continue
+
+        estimated_price = _safe_float(seed.get("estimated_meal_price"), 15.0)
+        fallback_items.append(
+            {
+                "name": str(seed.get("name", "Nearby dining option")),
+                "distance_min": 8 + (index * 5),
+                "budget_ok": (budget is None) or (estimated_price <= budget),
+                "hours_open": True,
+                "dietary_tags": list(seed.get("dietary_tags", [])),
+                "source_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(seed.get('query', seed.get('name', ''))))}",
+                "coordinates": None,
+                "vegan_evidence": True,
+            }
+        )
+
+    return fallback_items[:5]
+
+
+def _build_seed_menu_recommendations(fallback_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seed_by_name = {str(item.get("name", "")).strip(): item for item in FALLBACK_SEED_OPTIONS}
+    recommendations: list[dict[str, Any]] = []
+
+    for option in fallback_options[:5]:
+        name = str(option.get("name", "")).strip()
+        seed = seed_by_name.get(name, {})
+        estimated_price = _safe_float(seed.get("estimated_meal_price"), 15.0)
+        highlights = list(seed.get("menu_highlights", [])) or ["vegan-friendly options"]
+        map_url = str(option.get("source_url", ""))
+
+        recommendations.append(
+            {
+                "name": name,
+                "menu_highlights": highlights,
+                "estimated_meal_price": round(estimated_price, 2),
+                "source": "seed_fallback",
+                "web_reference": {
+                    "title": f"{name} map search",
+                    "url": map_url,
+                },
+                "source_url": map_url,
+                "menu_items_under_budget": [],
+                "detail_text": (
+                    f"Estimated meal around ${round(estimated_price, 2)} with likely options such as "
+                    + ", ".join(highlights[:2])
+                    + "."
+                ),
+                "data_points": {
+                    "distance_min": option.get("distance_min"),
+                    "budget_ok": option.get("budget_ok"),
+                    "estimated_meal_price": round(estimated_price, 2),
+                },
+            }
+        )
+
+    return recommendations
 
 
 def _build_graph() -> Any | None:
@@ -1117,79 +1337,6 @@ async def _generate_ai_recommendation(user_message: str, result: dict[str, Any])
     return await call_gemini_with_retry(prompt, "gemini-3.1-flash-lite", 4)
 
 
-async def _generate_gemini_dining_options(
-    user_message: str,
-    user_location: str | None,
-    budget: float | None,
-    dietary_preferences: list[str],
-    menu_preferences: list[str],
-) -> list[dict[str, Any]]:
-    prompt = (
-        "You are a UMD dining discovery assistant. "
-        "Suggest 3 to 5 likely dining choices near campus based on web knowledge. "
-        "Return ONLY valid JSON as an array of objects with keys: "
-        "name (string), distance_min (integer), hours_open (boolean), dietary_tags (array of strings), estimated_meal_price (number).\n\n"
-        f"User query: {user_message}\n"
-        f"User location: {user_location or 'not provided'}\n"
-        f"Budget: {budget if budget is not None else 'not provided'}\n"
-        f"Dietary preferences: {dietary_preferences}\n"
-        f"Menu preferences: {menu_preferences}\n"
-    )
-    raw = await call_gemini_with_retry(
-        prompt,
-        "gemini-3.1-flash-lite",
-        timeout_seconds=6,
-        max_attempts=2,
-        base_delay_seconds=0.8,
-    )
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-
-    parsed: Any
-    try:
-        parsed = json.loads(cleaned)
-    except Exception:
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
-        try:
-            parsed = json.loads(cleaned[start : end + 1])
-        except Exception:
-            return []
-
-    if isinstance(parsed, dict):
-        candidate = parsed.get("options") or parsed.get("results") or parsed.get("data")
-        parsed = candidate if isinstance(candidate, list) else []
-    if not isinstance(parsed, list):
-        return []
-
-    options: list[dict[str, Any]] = []
-    for item in parsed[:5]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-        distance_min = max(2, int(_safe_float(item.get("distance_min"), 12)))
-        estimated_price = _safe_float(item.get("estimated_meal_price"), 12.0)
-        options.append(
-            {
-                "name": name,
-                "distance_min": distance_min,
-                "budget_ok": budget is None or budget >= estimated_price,
-                "hours_open": bool(item.get("hours_open", True)),
-                "dietary_tags": [str(tag).lower() for tag in item.get("dietary_tags", []) if str(tag).strip()],
-                "estimated_meal_price": estimated_price,
-                "source": "gemini_fallback",
-            }
-        )
-    return options
-
-
 async def run(context: dict) -> dict:
     effective_context = dict(context)
     if not isinstance(effective_context.get("user_message"), str) or not effective_context.get("user_message"):
@@ -1197,40 +1344,102 @@ async def run(context: dict) -> dict:
             effective_context["user_message"] = str(effective_context.get("agent_prompt"))
 
     initial_state: DiningState = {"context": effective_context}
+    user_location_hint = effective_context.get("user_location") or effective_context.get("origin") or effective_context.get("location")
+    allow_seed_fallback = bool(effective_context.get("force_seed_fallback")) or (
+        str(os.getenv("DINING_ALLOW_SEED_FALLBACK", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    )
+
+    def _generic_route_preview() -> dict[str, Any] | None:
+        if not user_location_hint:
+            return None
+        generic_destination = "University of Maryland dining options"
+        return {
+            "origin": str(user_location_hint),
+            "destination": generic_destination,
+            "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(generic_destination)}",
+        }
+
+    if allow_seed_fallback and bool(effective_context.get("force_seed_fallback")):
+        dietary_preferences = _extract_dietary_from_message(str(effective_context.get("user_message", "")))
+        budget_raw = effective_context.get("budget")
+        budget = _safe_float(budget_raw, 0.0) if budget_raw is not None else None
+        fallback_options = _build_seed_fallback_options(budget, dietary_preferences)
+        return {
+            "agent": "dining",
+            "options": fallback_options,
+            "menu_recommendations": _build_seed_menu_recommendations(fallback_options),
+            "data_sources": {
+                "campus": "none",
+                "off_campus": "none",
+                "web_menu": "none",
+                "live_web_or_api_only": True,
+                "gemini_used": False,
+                "seed_fallback": "umd_college_park_curated",
+            },
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "Share your current location (or nearest building) to get walking directions.",
+                "Share your budget and dietary restrictions for more accurate dining recommendations.",
+            ],
+            "warning": "Showing curated nearby fallback options while live data recovers.",
+            **({"route_preview": _generic_route_preview()} if _generic_route_preview() else {}),
+        }
 
     async def _run_parallel_pipeline(state: DiningState) -> DiningState:
         working = dict(state)
         working.update(_node_ingest_context(working))
 
+        if _is_nearby_beverage_fastpath(
+            str(working.get("user_message", "")),
+            budget=working.get("budget"),
+            dietary_preferences=list(working.get("dietary_preferences", [])),
+            user_location=str(working.get("user_location") or "").strip() or None,
+        ):
+            # Fast path for prompts like "best coffee near me": rely on nearby place APIs first
+            # and avoid slower web/menu scraping branches that can time out under rate limiting.
+            off_campus_data = await asyncio.to_thread(_node_fetch_off_campus_options, working)
+            working.update(
+                {
+                    "campus_options": [],
+                    "campus_source": "skipped_beverage_fastpath",
+                    "campus_failures": 0,
+                }
+            )
+            working.update(off_campus_data)
+            working.update(
+                {
+                    "web_menu_options": [],
+                    "evidence_options": list(off_campus_data.get("off_campus_options", [])),
+                    "web_menu_source": "skipped_beverage_fastpath",
+                    "web_menu_failures": 0,
+                }
+            )
+            working.update(_node_rank_options(working))
+            working.update(_node_build_route_preview(working))
+            working.update(_node_build_result(working))
+            return working
+
         campus_task = asyncio.to_thread(_node_fetch_campus_options, working)
         off_campus_task = asyncio.to_thread(_node_fetch_off_campus_options, working)
-        strict_mode = strict_live_mode_enabled()
-        if strict_mode:
-            campus_data, off_campus_data = await asyncio.gather(campus_task, off_campus_task)
-            web_options: list[dict[str, Any]] = []
-            web_source = "skipped_in_strict_mode"
-            web_failures = 0
-            evidence_options = list(campus_data.get("campus_options", [])) + list(off_campus_data.get("off_campus_options", []))
-            evidence_failures = 0
-        else:
-            web_task = asyncio.to_thread(
-                _build_web_menu_options,
-                working.get("user_location"),
-                working.get("budget"),
-                working.get("menu_preferences", []),
-            )
+        web_task = asyncio.to_thread(
+            _build_web_menu_options,
+            working.get("user_location"),
+            working.get("budget"),
+            working.get("menu_preferences", []),
+            working.get("dietary_preferences", []),
+        )
 
-            campus_data, off_campus_data, web_payload = await asyncio.gather(campus_task, off_campus_task, web_task)
-            web_options, web_source, web_failures = web_payload
+        campus_data, off_campus_data, web_payload = await asyncio.gather(campus_task, off_campus_task, web_task)
+        web_options, web_source, web_failures = web_payload
 
-            evidence_input = list(campus_data.get("campus_options", [])) + list(off_campus_data.get("off_campus_options", []))
-            evidence_options, evidence_failures = await asyncio.to_thread(
-                _enrich_options_with_web_evidence,
-                evidence_input,
-                working.get("user_location"),
-                working.get("budget"),
-                working.get("menu_preferences", []),
-            )
+        evidence_input = list(campus_data.get("campus_options", [])) + list(off_campus_data.get("off_campus_options", []))
+        evidence_options, evidence_failures = await asyncio.to_thread(
+            _enrich_options_with_web_evidence,
+            evidence_input,
+            working.get("user_location"),
+            working.get("budget"),
+            working.get("menu_preferences", []),
+        )
 
         working.update(campus_data)
         working.update(off_campus_data)
@@ -1261,42 +1470,54 @@ async def run(context: dict) -> dict:
                 result["warning"] = f"Dining recommendation text unavailable ({type(exc).__name__}); returning ranked live options."
             return result
 
-        if isinstance(final_state, dict) and isinstance(result, dict) and result.get("agent") == "dining":
-            campus_failures = int(final_state.get("campus_failures", 0) or 0)
-            off_campus_failures = int(final_state.get("off_campus_failures", 0) or 0)
-            web_menu_failures = int(final_state.get("web_menu_failures", 0) or 0)
-            total_web_failures = campus_failures + off_campus_failures + web_menu_failures
-            if total_web_failures >= 2:
-                gemini_options = await _generate_gemini_dining_options(
-                    str(effective_context.get("user_message", "")),
-                    effective_context.get("user_location") or effective_context.get("location") or effective_context.get("origin"),
-                    _safe_float(effective_context.get("budget"), 0.0) if effective_context.get("budget") is not None else None,
-                    [str(item) for item in (effective_context.get("dietary_preferences") or [])],
-                    [str(item) for item in (effective_context.get("menu_preferences") or [])],
+        if isinstance(result, dict):
+            if result.get("agent") == "dining" and not result.get("route_preview"):
+                preview = _generic_route_preview()
+                if preview:
+                    result["route_preview"] = preview
+            if result.get("agent") == "dining" and not result.get("options"):
+                dietary_preferences = final_state.get("dietary_preferences", []) if isinstance(final_state, dict) else []
+                budget = final_state.get("budget") if isinstance(final_state, dict) else None
+                if allow_seed_fallback:
+                    fallback_options = _build_seed_fallback_options(budget, dietary_preferences)
+                    if fallback_options:
+                        result["options"] = fallback_options
+                        result["menu_recommendations"] = _build_seed_menu_recommendations(fallback_options)
+                        result.setdefault("data_sources", {})["seed_fallback"] = "umd_college_park_curated"
+
+                result.setdefault("needs_user_input", True)
+                result.setdefault(
+                    "follow_up_questions",
+                    [
+                        "Share your current location (or nearest building) to get walking directions.",
+                        "Share your budget and dietary restrictions for more accurate dining recommendations.",
+                    ],
                 )
-                if gemini_options:
-                    result["options"] = gemini_options
-                    result.setdefault("data_sources", {})["campus"] = "gemini_after_web_failures"
-                    result.setdefault("data_sources", {})["off_campus"] = "gemini_after_web_failures"
-                    result.setdefault("data_sources", {})["gemini_used"] = True
-                    result["warning"] = "Live dining web/API sources failed repeatedly; Gemini fallback used after retries."
-                    return result
+                if result.get("options"):
+                    result["warning"] = (
+                        "Live dining sources returned no results; showing curated nearby fallback options while live data recovers."
+                    )
+                else:
+                    result["warning"] = "No live dining options were found from configured sources."
+            return result
     except Exception:
         pass
 
     return {
         "agent": "dining",
         "options": [],
+        "menu_recommendations": [],
         "data_sources": {
             "campus": "none",
             "off_campus": "none",
             "live_web_or_api_only": True,
             "gemini_used": False,
         },
-        "error": "No live dining options found, and Gemini fallback could not produce usable results.",
         "needs_user_input": True,
         "follow_up_questions": [
             "Share your current location (or nearest building) to get walking directions.",
             "Share your budget and dietary restrictions for more accurate dining recommendations.",
         ],
+        "warning": "No live dining options were found from configured sources.",
+        **({"route_preview": _generic_route_preview()} if _generic_route_preview() else {}),
     }

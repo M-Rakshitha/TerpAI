@@ -53,8 +53,8 @@ def _search_links(query: str, limit: int = 6) -> list[dict[str, str]]:
 
 async def _generate_job_tips(context: dict) -> str:
     """Generate student-focused job search and career tips."""
-    major = context.get("major", "your field")
-    career_goals = context.get("user_message", "internship or research position")
+    major = context.get("major") or ""
+    career_goals = context.get("agent_prompt") or context.get("user_message") or ""
     
     prompt = (
         "You are a career advisor for University of Maryland students. "
@@ -73,8 +73,8 @@ async def _generate_job_tips(context: dict) -> str:
 
 async def _generate_research_email(context: dict) -> str:
     """Generate a student-appropriate research email template."""
-    major = context.get("major", "your field")
-    interests = context.get("user_message", "research opportunities")
+    major = context.get("major") or ""
+    interests = context.get("agent_prompt") or context.get("user_message") or ""
     
     prompt = (
         "Write a professional but personable cold email from a UMD undergraduate seeking a research position. "
@@ -95,7 +95,30 @@ async def _generate_research_email(context: dict) -> str:
 async def run(context: dict) -> dict:
     """Find job, internship, and research opportunities for UMD students."""
     
-    user_message = str(context.get("user_message", "internship or research position"))
+    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "").strip()
+    if not user_message:
+        return {
+            "agent": "jobs_research",
+            "jobs": [],
+            "labs": [],
+            "cold_email": "",
+            "internships": [],
+            "research_opportunities": [],
+            "job_search_tips": None,
+            "research_email_template": None,
+            "error": "Jobs/research agent requires a clear request in the prompt.",
+            "data_sources": {
+                "web_search_used": False,
+                "search_provider": "duckduckgo_html",
+                "gemini_used": False,
+            },
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "Are you looking for internships, part-time jobs, research, or all of these?",
+                "What major, role type, and timeframe should I target?",
+            ],
+        }
+
     major = str(context.get("major", ""))
     
     # Parallel searches for different job types
@@ -177,12 +200,16 @@ async def run(context: dict) -> dict:
             "job_search_tips": job_tips,
             "research_email_template": research_email,
             "error": "No live job/research opportunities found in web search",
-            "suggestion": "Try searching on Handshake directly, reach out to your major's advising office, or attend career fairs",
             "data_sources": {
                 "web_search_used": False,
                 "search_provider": "duckduckgo_html",
                 "gemini_used": bool(job_tips or research_email),
             },
+            "needs_user_input": True,
+            "follow_up_questions": [
+                "Should I narrow to internships, research labs, or campus jobs?",
+                "Share specific keywords (for example AI, data science, biology lab, finance analyst).",
+            ],
         }
     
     response = {

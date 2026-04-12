@@ -13,6 +13,18 @@ export interface QueryResponse {
   presentation?: QueryPresentation | null;
   agent_execution?: QueryExecution | null;
   agent_outputs?: Record<string, unknown> | null;
+  user_input_request?: {
+    needs_user_input?: boolean;
+    required_fields?: string[];
+    permission?: string;
+    prompt?: string;
+    fallback_location?: string;
+    continuing_with_fallback?: boolean;
+  } | null;
+  awaiting_user_input?: boolean;
+  pipeline_paused?: boolean;
+  location_fallback_used?: boolean;
+  location_default?: string;
 }
 
 export interface QueryPresentation {
@@ -103,6 +115,10 @@ export interface QueryTimelineEvent {
   completion_message?: string;
   step_index?: number;
   subtask?: string;
+  pipeline_paused?: boolean;
+  required_fields?: string[];
+  fallback_location?: string;
+  continuing_with_fallback?: boolean;
 }
 
 export interface AgentStepResult {
@@ -121,7 +137,29 @@ export interface ScheduleResult {
 
 export interface DiningResult {
   agent: "dining";
-  options: { name: string; distance_min: number; budget_ok: boolean; hours_open: boolean; dietary_tags: string[] }[];
+  options: {
+    name: string;
+    distance_min: number;
+    budget_ok: boolean;
+    hours_open: boolean;
+    dietary_tags: string[];
+    source_url?: string | null;
+    coordinates?: [number, number] | null;
+    vegan_evidence?: boolean;
+  }[];
+  menu_recommendations?: {
+    name?: string;
+    menu_highlights?: string[];
+    estimated_meal_price?: number | null;
+    source?: string;
+    source_url?: string | null;
+    menu_items_under_budget?: { item?: string; price?: number }[];
+    detail_text?: string;
+    data_points?: Record<string, string | number | boolean | null>;
+  }[];
+  warning?: string;
+  follow_up_questions?: string[];
+  ai_recommendation?: string;
 }
 
 export interface EventsResult {
@@ -143,6 +181,7 @@ export interface NavigatorResult {
   walk_minutes: number;
   steps: string[];
   map_url: string;
+  options?: string[];
 }
 
 export interface StudyResourcesResult {

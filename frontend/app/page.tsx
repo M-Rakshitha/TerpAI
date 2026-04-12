@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { QuerySubmitContext } from '@/lib/api';
 import PromptPage from '@/components/ai/PromptPage';
 import AgentsPage from '@/components/ai/AgentsPage';
 import ResultsPage from '@/components/ai/ResultsPage';
@@ -25,6 +26,73 @@ export default function Home() {
   const { data, loading, error, events, submit, reset } = useQuery();
 
   const timeline = useMemo<QueryTimelineEvent[]>(() => events, [events]);
+
+  const LOCATION_INTENT_TERMS = [
+    'near me',
+    'nearby',
+    'around me',
+    'current location',
+    'walking distance',
+    'how do i get',
+    'directions',
+    'route',
+  ];
+
+  const queryNeedsLocation = (message: string) => {
+    const lowered = message.toLowerCase();
+    return LOCATION_INTENT_TERMS.some((term) => lowered.includes(term));
+  };
+
+  const getBrowserLocation = async (
+    options?: { enableHighAccuracy?: boolean; timeout?: number; maximumAge?: number },
+  ): Promise<{ location: string; coords: { latitude: number; longitude: number } }> => {
+    return await new Promise<{ location: string; coords: { latitude: number; longitude: number } }>((resolve, reject) => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        reject(new Error('Geolocation is not available in this browser.'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          resolve({
+            location: `${position.coords.latitude},${position.coords.longitude}`,
+            coords: {
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            },
+          });
+        },
+        (error) => reject(error),
+        {
+          enableHighAccuracy: options?.enableHighAccuracy ?? false,
+          timeout: options?.timeout ?? 20000,
+          maximumAge: options?.maximumAge ?? 30000,
+        },
+      );
+    });
+  };
+
+  const resolveLocationContext = async (message: string): Promise<QuerySubmitContext | null> => {
+    if (!queryNeedsLocation(message)) {
+      return {};
+    }
+
+    try {
+      const location = await getBrowserLocation();
+      return {
+        user_location: location.location,
+        current_location_coords: location.coords,
+        location_permission_granted: true,
+      };
+    } catch (error) {
+      const geoError = error as GeolocationPositionError | undefined;
+      if (geoError?.code === 1) {
+        return { location_permission_granted: false };
+      }
+      // Non-permission geolocation failures (timeout/unavailable) should still
+      // submit so backend can request location explicitly without blocking UI flow.
+      return {};
+    }
+  };
 
   const plannerEvent = useMemo(() => {
     const candidates = timeline.filter((event) => event.type === 'planner_status');
@@ -274,7 +342,30 @@ export default function Home() {
     setPage('agents');
 
     try {
-      await submit(trimmed);
+      const submitContext = await resolveLocationContext(trimmed);
+      if (submitContext === null) {
+        setPage('prompt');
+        return;
+      }
+      const firstResponse = await submit(trimmed, submitContext);
+      if (firstResponse?.awaiting_user_input && queryNeedsLocation(trimmed)) {
+        try {
+          const location = await getBrowserLocation({
+            enableHighAccuracy: false,
+            timeout: 25000,
+            maximumAge: 60000,
+          });
+          await submit(trimmed, {
+            user_location: location.location,
+            current_location_coords: location.coords,
+            location_permission_granted: true,
+          });
+        } catch {
+          // Always send an explicit fallback decision if follow-up location lookup
+          // fails, otherwise the backend can remain paused awaiting user input.
+          await submit(trimmed, { location_permission_granted: false });
+        }
+      }
       setSummaryVisible(false);
     } catch {
       // Keep the agents page visible so users see live/error status instead of
@@ -295,6 +386,8 @@ export default function Home() {
 
   const statusLabel = loading
     ? 'Live backend updates are streaming in real time.'
+    : data?.awaiting_user_input
+      ? data?.user_input_request?.prompt || 'Waiting for your current location before running agents.'
     : error
       ? error
       : page === 'agents' && data && !summaryVisible
