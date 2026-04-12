@@ -309,6 +309,37 @@ async def test_dining_agent_returns_soft_no_results_when_sources_are_empty(monke
 
 
 @pytest.mark.asyncio
+async def test_dining_agent_keeps_campus_results_when_web_branch_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dining_agent,
+        "_fetch_live_dining_names",
+        lambda: (["South Campus Dining", "Yahentamitsi Dining Hall"], "umd_locations_page", 0),
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_query_overpass_restaurants",
+        lambda _lat, _lon, radius_m=2200: [],
+    )
+    monkeypatch.setattr(
+        dining_agent,
+        "_build_web_menu_options",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("web branch error")),
+    )
+
+    result = await dining_agent.run(
+        {
+            "user_message": "Where's the best coffee on campus?",
+        }
+    )
+
+    assert result["agent"] == "dining"
+    options = result.get("options", [])
+    assert options
+    assert any(option.get("name") == "South Campus Dining" for option in options)
+    assert result.get("data_sources", {}).get("campus") == "umd_locations_page"
+
+
+@pytest.mark.asyncio
 async def test_dining_agent_coffee_near_me_uses_fastpath_off_campus(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dining_agent, "_geocode_location", lambda _location: (38.9869, -76.9426))
     monkeypatch.setattr(

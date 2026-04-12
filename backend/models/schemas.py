@@ -5,9 +5,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class Location(BaseModel):
+    lat: float
+    lng: float
+
+
 class QueryRequest(BaseModel):
     message: str = Field(min_length=1)
     debug_trace_context: bool = False
+    location: Location | None = None
     user_location: str | None = None
     current_location_coords: dict[str, float] | None = None
     location_permission_granted: bool | None = None

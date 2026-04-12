@@ -1,6 +1,7 @@
 import { QueryResponse, QueryTimelineEvent } from './types';
 
 export interface QuerySubmitContext {
+  location?: { lat: number; lng: number } | null;
   user_location?: string;
   current_location_coords?: { latitude: number; longitude: number };
   location_permission_granted?: boolean;
@@ -42,16 +43,7 @@ async function readErrorResponse(response: Response) {
 
 export async function submitQuery(message: string, submitContext?: QuerySubmitContext): Promise<QueryResponse> {
   const candidates = getApiBaseUrlCandidates();
-  const requestBody = JSON.stringify({
-    message,
-    ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
-    ...(submitContext?.current_location_coords
-      ? { current_location_coords: submitContext.current_location_coords }
-      : {}),
-    ...(typeof submitContext?.location_permission_granted === 'boolean'
-      ? { location_permission_granted: submitContext.location_permission_granted }
-      : {}),
-  });
+  const requestBody = JSON.stringify(buildRequestPayload(message, submitContext));
   let lastError: Error | null = null;
 
   for (const baseUrl of candidates) {
@@ -78,6 +70,31 @@ export async function submitQuery(message: string, submitContext?: QuerySubmitCo
   }
 
   throw lastError || new Error('Unable to reach backend API.');
+}
+
+function buildRequestPayload(message: string, submitContext?: QuerySubmitContext) {
+  const normalizedLocation = submitContext?.location ?? null;
+  const derivedCoords =
+    normalizedLocation
+      ? {
+          latitude: normalizedLocation.lat,
+          longitude: normalizedLocation.lng,
+        }
+      : submitContext?.current_location_coords;
+  const derivedUserLocation =
+    normalizedLocation
+      ? `${normalizedLocation.lat},${normalizedLocation.lng}`
+      : submitContext?.user_location;
+
+  return {
+    message,
+    location: normalizedLocation,
+    ...(derivedUserLocation ? { user_location: derivedUserLocation } : {}),
+    ...(derivedCoords ? { current_location_coords: derivedCoords } : {}),
+    ...(typeof submitContext?.location_permission_granted === 'boolean'
+      ? { location_permission_granted: submitContext.location_permission_granted }
+      : {}),
+  };
 }
 
 async function submitQueryViaWebSocket(
@@ -110,16 +127,9 @@ async function submitQueryViaWebSocket(
         socket.onopen = () => {
           socket.send(
             JSON.stringify({
-              message,
+              ...buildRequestPayload(message, submitContext),
               request_id: crypto.randomUUID?.() || `${Date.now()}`,
               debug_trace_context: true,
-              ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
-              ...(submitContext?.current_location_coords
-                ? { current_location_coords: submitContext.current_location_coords }
-                : {}),
-              ...(typeof submitContext?.location_permission_granted === 'boolean'
-                ? { location_permission_granted: submitContext.location_permission_granted }
-                : {}),
             }),
           );
         };

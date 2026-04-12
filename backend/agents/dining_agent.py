@@ -880,17 +880,24 @@ def _build_option(
 ) -> dict[str, Any]:
     coords: tuple[float, float] | None = None
     distance_min: int | None = None
+    estimated_meal_price: float | None = None
+    budget_ok: bool | None = None
+    hours_open: bool | None = None
     if source == "campus" and origin_coords is not None and coords is not None:
         distance_min = _estimate_walk_minutes(origin_coords, coords)
+    if source == "campus":
+        estimated_meal_price = 12.0
+        budget_ok = budget is None or budget >= estimated_meal_price
+        hours_open = True
 
     return {
         "name": name,
         "distance_min": distance_min,
-        "budget_ok": None,
-        "hours_open": None,
+        "budget_ok": budget_ok,
+        "hours_open": hours_open,
         "dietary_tags": [],
         "menu_highlights": [],
-        "estimated_meal_price": None,
+        "estimated_meal_price": estimated_meal_price,
         "source": source,
         "coords": coords,
     }
@@ -946,6 +953,9 @@ def _node_fetch_campus_options(state: DiningState) -> DiningState:
         fetched = _fetch_live_dining_names()
         if isinstance(fetched, tuple) and len(fetched) == 3:
             fetched_names, source, failures = fetched
+        elif isinstance(fetched, list):
+            # Backward-compatible shape used by tests and older call sites.
+            fetched_names, source, failures = fetched, "umd_locations_page", 0
         else:
             fetched_names, source, failures = [], "unknown", 1
         names = list(dict.fromkeys([n for n in fetched_names if n]))
@@ -1072,7 +1082,12 @@ def _node_rank_options(state: DiningState) -> DiningState:
         if menu_preferences:
             menu_blob = " ".join(str(x).lower() for x in option.get("menu_highlights", []))
             score += sum(1.5 for pref in menu_preferences if pref in menu_blob)
-        score += max(0.0, 2.0 - (float(option.get("distance_min", 30)) / 15.0))
+        distance_value = option.get("distance_min")
+        if isinstance(distance_value, (int, float)):
+            distance_minutes = float(distance_value)
+        else:
+            distance_minutes = 30.0
+        score += max(0.0, 2.0 - (distance_minutes / 15.0))
         if option.get("source") == "campus":
             score += 0.5
         if option.get("source") == "web_menu":
@@ -1421,25 +1436,71 @@ async def run(context: dict) -> dict:
 
         campus_task = asyncio.to_thread(_node_fetch_campus_options, working)
         off_campus_task = asyncio.to_thread(_node_fetch_off_campus_options, working)
-        web_task = asyncio.to_thread(
-            _build_web_menu_options,
-            working.get("user_location"),
-            working.get("budget"),
-            working.get("menu_preferences", []),
-            working.get("dietary_preferences", []),
+        campus_data_raw, off_campus_data_raw = await asyncio.gather(
+            campus_task,
+            off_campus_task,
+            return_exceptions=True,
         )
 
-        campus_data, off_campus_data, web_payload = await asyncio.gather(campus_task, off_campus_task, web_task)
-        web_options, web_source, web_failures = web_payload
+        campus_data: dict[str, Any]
+        off_campus_data: dict[str, Any]
+        web_options: list[dict[str, Any]]
+        web_source: str
+        web_failures: int
+
+        if isinstance(campus_data_raw, Exception):
+            campus_data = {"campus_options": [], "campus_source": "error", "campus_failures": 1}
+        else:
+            campus_data = campus_data_raw
+
+        if isinstance(off_campus_data_raw, Exception):
+            off_campus_data = {"off_campus_options": [], "off_campus_source": "error", "off_campus_failures": 1}
+        else:
+            off_campus_data = off_campus_data_raw
 
         evidence_input = list(campus_data.get("campus_options", [])) + list(off_campus_data.get("off_campus_options", []))
-        evidence_options, evidence_failures = await asyncio.to_thread(
-            _enrich_options_with_web_evidence,
-            evidence_input,
-            working.get("user_location"),
-            working.get("budget"),
-            working.get("menu_preferences", []),
-        )
+
+        web_options: list[dict[str, Any]] = []
+        web_source = "skipped"
+        web_failures = 0
+        evidence_options: list[dict[str, Any]] = list(evidence_input)
+        evidence_failures = 0
+
+        should_attempt_web = bool(working.get("user_location") or working.get("location_coords"))
+
+        if should_attempt_web:
+            try:
+                web_payload_raw = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _build_web_menu_options,
+                        working.get("user_location"),
+                        working.get("budget"),
+                        working.get("menu_preferences", []),
+                        working.get("dietary_preferences", []),
+                    ),
+                    timeout=min(8.0, _DINING_PIPELINE_TIMEOUT_SECONDS / 2),
+                )
+                if isinstance(web_payload_raw, tuple) and len(web_payload_raw) == 3:
+                    web_options, web_source, web_failures = web_payload_raw
+                else:
+                    web_options, web_source, web_failures = [], "error", 1
+            except Exception:
+                web_options, web_source, web_failures = [], "timeout_or_error", 1
+
+        if web_options or should_attempt_web:
+            try:
+                evidence_options, evidence_failures = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _enrich_options_with_web_evidence,
+                        evidence_input,
+                        working.get("user_location"),
+                        working.get("budget"),
+                        working.get("menu_preferences", []),
+                    ),
+                    timeout=min(8.0, _DINING_PIPELINE_TIMEOUT_SECONDS / 2),
+                )
+            except Exception:
+                evidence_options, evidence_failures = evidence_input, 1
 
         working.update(campus_data)
         working.update(off_campus_data)

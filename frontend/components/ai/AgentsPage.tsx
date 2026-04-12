@@ -8,6 +8,11 @@ interface LiveStage {
   description: string
   detail?: string
   completionMessage?: string
+  progress?: number
+  currentStep?: number
+  totalSteps?: number
+  activity?: string
+  lastUpdatedAt?: string
   steps: { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string }[]
 }
 
@@ -47,6 +52,21 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
     if (status === 'failed') return 'Needs attention'
     return 'Queued'
   }
+
+  const stageProgress = (stage: LiveStage) => {
+    if (typeof stage.progress === 'number') {
+      return Math.max(3, Math.min(100, stage.progress))
+    }
+    if (stage.status === 'Completed') return 100
+    if (stage.status === 'Running') return 20
+    if (stage.status === 'Attention') return 100
+    return 8
+  }
+
+  const agentPill = (name: string) =>
+    name
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase())
 
   const pickCurrentStep = (stage: LiveStage): { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string } | null => {
     if (!stage.steps || stage.steps.length === 0) return null
@@ -120,7 +140,7 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                 <div key={stage.name} className="rounded-[28px] border border-[#FFB81C]/15 bg-[#111827] p-5">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.3em] text-[#FFB81C]">{stage.name}</p>
+                      <p className="text-xs uppercase tracking-[0.3em] text-[#FFB81C]">{agentPill(stage.name)}</p>
                       <p className="mt-2 text-lg font-semibold text-white">{stage.description}</p>
                       <p className="mt-2 text-sm text-gray-300">{stage.status === 'Completed' ? stage.completionMessage || stage.detail || 'Completed.' : stage.detail || 'Waiting for live update...'}</p>
                     </div>
@@ -137,9 +157,7 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                         {currentStep ? (
                           <div className="rounded-xl bg-[#0f0f0f] px-3 py-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="text-sm font-semibold text-white">
-                                Step {currentStepIndex >= 0 ? currentStepIndex + 1 : 1}: {currentStep.title}
-                              </p>
+                              <p className="text-sm font-semibold text-white">{stage.activity || currentStep.title}</p>
                               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${stepBadgeClass(currentStep.status)}`}>
                                 {normalizeStepLabel(currentStep.status)}
                               </span>
@@ -155,22 +173,27 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                     )
                   })()}
 
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                  <div className="mt-4 space-y-2">
+                    <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${
+                          stage.status === 'Completed'
+                            ? 'bg-[#16A34A]'
+                            : stage.status === 'Running'
+                              ? 'bg-[#2563EB]'
+                              : stage.status === 'Attention'
+                                ? 'bg-[#DC2626]'
+                                : 'bg-[#9CA3AF]'
+                        }`}
+                        style={{ width: `${stageProgress(stage)}%` }}
+                      />
+                    </div>
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${
-                        stage.status === 'Completed'
-                          ? 'bg-[#16A34A]'
-                          : stage.status === 'Running'
-                            ? 'bg-[#2563EB]'
-                            : stage.status === 'Attention'
-                              ? 'bg-[#DC2626]'
-                              : 'bg-[#9CA3AF]'
-                      }`}
-                      style={{
-                        width:
-                          stage.status === 'Completed' ? '100%' : stage.status === 'Running' ? '68%' : stage.status === 'Attention' ? '48%' : '18%',
-                      }}
-                    />
+                      className="flex items-center justify-between rounded-xl border border-white/10 bg-[#0f0f0f] px-3 py-2 text-[11px] uppercase tracking-[0.2em] text-gray-400"
+                    >
+                      <span>{stage.status === 'Running' ? 'Live stream' : 'Stage state'}</span>
+                      <span>{stage.currentStep && stage.totalSteps ? `${stage.currentStep}/${stage.totalSteps}` : `${Math.round(stageProgress(stage))}%`}</span>
+                    </div>
                   </div>
                 </div>
               ))}

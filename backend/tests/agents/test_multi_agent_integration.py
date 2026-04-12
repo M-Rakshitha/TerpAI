@@ -447,7 +447,7 @@ async def test_planner_drives_three_agent_activation_then_router_executes(monkey
 
 
 @pytest.mark.asyncio
-async def test_execute_pipeline_pauses_when_location_required_and_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_execute_pipeline_continues_with_fallback_when_location_required_and_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop_persist(*args, **kwargs) -> None:
         return None
 
@@ -463,10 +463,11 @@ async def test_execute_pipeline_pauses_when_location_required_and_missing(monkey
     )
 
     payload = response.model_dump(mode="json")
-    assert payload.get("awaiting_user_input") is True
-    assert payload.get("pipeline_paused") is True
-    assert response.agents_used == []
-    assert any(event.get("type") == "user_input_request" and event.get("status") == "waiting" for event in trace)
+    assert payload.get("awaiting_user_input") in (False, None)
+    assert payload.get("pipeline_paused") in (False, None)
+    assert payload.get("location_fallback_used") is True
+    assert "dining" in response.agents_used and "navigator" in response.agents_used
+    assert any(event.get("type") == "user_input_request" and event.get("status") == "fallback_applied" for event in trace)
 
 
 @pytest.mark.asyncio
