@@ -1,3 +1,11 @@
-import { handleAuth } from '@auth0/nextjs-auth0';
+function notImplemented() {
+	return new Response('Auth is not configured for this build.', { status: 501 });
+}
 
-export const GET = handleAuth();
+export async function GET() {
+	return notImplemented();
+}
+
+export async function POST() {
+	return notImplemented();
+}

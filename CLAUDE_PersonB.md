@@ -20,6 +20,15 @@ You are responsible for everything the user sees: the Next.js app, Auth0 login U
 - **HTTP client**: `axios` or native `fetch`
 - **Package manager**: npm
 
+## Current implementation notes
+
+- The frontend should treat the websocket stream as the primary source of truth for progress updates and use the HTTP response as the final result payload.
+- Live agent progress should show only the current running or queued step, not every historical step at once.
+- Clear stale query results when a new request is submitted so the previous run does not mask live updates.
+- The dashboard should still render gracefully if some agent results are `null`, but it should prefer the live response over any local fallback state.
+- Keep the existing query bar and card layout responsive, but do not reintroduce mock data as the default path when the real backend is available.
+- When rendering agent stages, preserve the current streaming behavior and do not regress to static completion-only updates.
+
 ---
 
 ## Folder structure
@@ -74,6 +83,7 @@ Content-Type: application/json
 ```
 
 Response:
+
 ```json
 {
   "query": "string",
@@ -81,16 +91,39 @@ Response:
   "results": {
     "schedule": {
       "agent": "schedule",
-      "study_blocks": [{ "start": "HH:MM", "end": "HH:MM", "subject": "string", "type": "review|practice|reading" }],
+      "study_blocks": [
+        {
+          "start": "HH:MM",
+          "end": "HH:MM",
+          "subject": "string",
+          "type": "review|practice|reading"
+        }
+      ],
       "next_deadline": { "title": "string", "due": "ISO8601" }
     },
     "dining": {
       "agent": "dining",
-      "options": [{ "name": "string", "distance_min": 0, "budget_ok": true, "hours_open": true, "dietary_tags": [] }]
+      "options": [
+        {
+          "name": "string",
+          "distance_min": 0,
+          "budget_ok": true,
+          "hours_open": true,
+          "dietary_tags": []
+        }
+      ]
     },
     "events": {
       "agent": "events",
-      "events": [{ "title": "string", "location": "string", "start": "ISO8601", "free_food": false, "tags": [] }]
+      "events": [
+        {
+          "title": "string",
+          "location": "string",
+          "start": "ISO8601",
+          "free_food": false,
+          "tags": []
+        }
+      ]
     },
     "finance": {
       "agent": "finance",
@@ -108,13 +141,41 @@ Response:
     },
     "study_resources": {
       "agent": "study_resources",
-      "tutoring": [{ "service": "string", "subject": "string", "schedule": "string", "location": "string" }],
-      "office_hours": [{ "professor": "string", "course": "string", "time": "string", "room": "string" }]
+      "tutoring": [
+        {
+          "service": "string",
+          "subject": "string",
+          "schedule": "string",
+          "location": "string"
+        }
+      ],
+      "office_hours": [
+        {
+          "professor": "string",
+          "course": "string",
+          "time": "string",
+          "room": "string"
+        }
+      ]
     },
     "jobs_research": {
       "agent": "jobs_research",
-      "jobs": [{ "title": "string", "department": "string", "pay": "string", "apply_url": "string" }],
-      "labs": [{ "pi": "string", "department": "string", "topic": "string", "contact": "string" }],
+      "jobs": [
+        {
+          "title": "string",
+          "department": "string",
+          "pay": "string",
+          "apply_url": "string"
+        }
+      ],
+      "labs": [
+        {
+          "pi": "string",
+          "department": "string",
+          "topic": "string",
+          "contact": "string"
+        }
+      ],
       "cold_email": "string"
     }
   }
@@ -152,12 +213,24 @@ export interface ScheduleResult {
 
 export interface DiningResult {
   agent: "dining";
-  options: { name: string; distance_min: number; budget_ok: boolean; hours_open: boolean; dietary_tags: string[] }[];
+  options: {
+    name: string;
+    distance_min: number;
+    budget_ok: boolean;
+    hours_open: boolean;
+    dietary_tags: string[];
+  }[];
 }
 
 export interface EventsResult {
   agent: "events";
-  events: { title: string; location: string; start: string; free_food: boolean; tags: string[] }[];
+  events: {
+    title: string;
+    location: string;
+    start: string;
+    free_food: boolean;
+    tags: string[];
+  }[];
 }
 
 export interface FinanceResult {
@@ -178,8 +251,18 @@ export interface NavigatorResult {
 
 export interface StudyResourcesResult {
   agent: "study_resources";
-  tutoring: { service: string; subject: string; schedule: string; location: string }[];
-  office_hours: { professor: string; course: string; time: string; room: string }[];
+  tutoring: {
+    service: string;
+    subject: string;
+    schedule: string;
+    location: string;
+  }[];
+  office_hours: {
+    professor: string;
+    course: string;
+    time: string;
+    room: string;
+  }[];
 }
 
 export interface JobsResearchResult {
@@ -205,28 +288,40 @@ export const MOCK_RESPONSE: QueryResponse = {
       agent: "schedule",
       study_blocks: [
         { start: "18:00", end: "20:00", subject: "CMSC131", type: "review" },
-        { start: "20:30", end: "22:00", subject: "CMSC131", type: "practice" }
+        { start: "20:30", end: "22:00", subject: "CMSC131", type: "practice" },
       ],
-      next_deadline: { title: "CMSC131 Exam", due: "2024-11-15T09:00:00" }
+      next_deadline: { title: "CMSC131 Exam", due: "2024-11-15T09:00:00" },
     },
     dining: {
       agent: "dining",
       options: [
-        { name: "South Campus Dining", distance_min: 5, budget_ok: true, hours_open: true, dietary_tags: ["vegan", "halal"] },
-        { name: "251 North", distance_min: 8, budget_ok: true, hours_open: true, dietary_tags: ["vegetarian"] }
-      ]
+        {
+          name: "South Campus Dining",
+          distance_min: 5,
+          budget_ok: true,
+          hours_open: true,
+          dietary_tags: ["vegan", "halal"],
+        },
+        {
+          name: "251 North",
+          distance_min: 8,
+          budget_ok: true,
+          hours_open: true,
+          dietary_tags: ["vegetarian"],
+        },
+      ],
     },
     finance: {
       agent: "finance",
-      weekly_spent: 47.50,
-      budget_remaining: 20.00,
-      suggestion: "You're on track. $20 covers dinner at most dining halls."
+      weekly_spent: 47.5,
+      budget_remaining: 20.0,
+      suggestion: "You're on track. $20 covers dinner at most dining halls.",
     },
     events: null,
     navigator: null,
     study_resources: null,
     jobs_research: null,
-  }
+  },
 };
 ```
 
@@ -235,6 +330,7 @@ export const MOCK_RESPONSE: QueryResponse = {
 ## Component specs
 
 ### ChatInput.tsx
+
 - Full-width text input bar, fixed at the bottom of the screen (like ChatGPT)
 - "Send" button or Enter key to submit
 - Shows a loading spinner while waiting for the API
@@ -242,6 +338,7 @@ export const MOCK_RESPONSE: QueryResponse = {
 - On submit: calls `useQuery` hook with the message string
 
 ### Dashboard.tsx
+
 - Receives the full `QueryResponse` object as a prop
 - Renders a responsive card grid (CSS grid, 2 columns on desktop, 1 on mobile)
 - Only renders a card if its result key is non-null
@@ -249,11 +346,13 @@ export const MOCK_RESPONSE: QueryResponse = {
 - Cards appear in this priority order: schedule → dining → finance → events → study_resources → navigator → jobs_research
 
 ### ScheduleCard.tsx
+
 - Show `next_deadline` as a countdown at the top ("Exam in 14 hours")
 - Render `study_blocks` as a mini timeline with subject labels and color coding by `type`
 - Color coding: `review` = blue, `practice` = amber, `reading` = gray
 
 ### DiningCard.tsx
+
 - List each dining option as a row
 - Show green checkmark if `budget_ok`, red X if not
 - Show "Open" badge if `hours_open`, "Closed" if not
@@ -261,25 +360,30 @@ export const MOCK_RESPONSE: QueryResponse = {
 - Show `distance_min` as "X min walk"
 
 ### EventsCard.tsx
+
 - List upcoming events with time and location
 - Highlight events with `free_food: true` with a special badge
 - Show tags as pills
 
 ### FinanceCard.tsx
+
 - Show a simple donut/bar chart of `weekly_spent` vs `budget_remaining` using Recharts
 - Show `suggestion` as a quoted callout below the chart
 
 ### NavigatorCard.tsx
+
 - Embed a Google Maps `<GoogleMap>` component showing the route
 - Show `walk_minutes` prominently ("12 min walk")
 - List `steps` as a numbered list below the map
 
 ### StudyResourcesCard.tsx
+
 - Two sections: "Tutoring" and "Office hours"
 - Each row shows service/professor, subject, time, location
 - Keep it compact — this is reference info, not the focus
 
 ### JobsResearchCard.tsx
+
 - Two tabs: "Campus jobs" and "Research labs"
 - Each job row shows title, department, pay
 - Each lab row shows PI name, topic, contact email
@@ -294,25 +398,25 @@ Use `@auth0/nextjs-auth0` with Next.js App Router.
 
 ```typescript
 // app/api/auth/[...auth0]/route.ts
-import { handleAuth } from '@auth0/nextjs-auth0';
+import { handleAuth } from "@auth0/nextjs-auth0";
 export const GET = handleAuth();
 ```
 
 ```typescript
 // lib/api.ts — attach the access token to every backend request
-import { getAccessToken } from '@auth0/nextjs-auth0';
+import { getAccessToken } from "@auth0/nextjs-auth0";
 
 export async function queryTerpAI(message: string): Promise<QueryResponse> {
   const { accessToken } = await getAccessToken();
   const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/query`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ message }),
   });
-  if (!res.ok) throw new Error('Query failed');
+  if (!res.ok) throw new Error("Query failed");
   return res.json();
 }
 ```
@@ -325,9 +429,9 @@ Redirect unauthenticated users to `/login`. Wrap the main page in Auth0's `withP
 
 ```typescript
 // hooks/useQuery.ts
-import { useState } from 'react';
-import { queryTerpAI } from '@/lib/api';
-import { QueryResponse } from '@/lib/types';
+import { useState } from "react";
+import { queryTerpAI } from "@/lib/api";
+import { QueryResponse } from "@/lib/types";
 
 export function useQuery() {
   const [data, setData] = useState<QueryResponse | null>(null);
@@ -341,7 +445,7 @@ export function useQuery() {
       const result = await queryTerpAI(message);
       setData(result);
     } catch (e) {
-      setError('Something went wrong. Try again.');
+      setError("Something went wrong. Try again.");
     } finally {
       setLoading(false);
     }

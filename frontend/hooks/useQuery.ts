@@ -1,25 +1,39 @@
 import { useState } from 'react';
-import { QueryResponse } from '@/lib/types';
-import { MOCK_RESPONSE } from '@/lib/mockData';
+import { submitQueryWithProgress } from '@/lib/api';
+import { QueryResponse, QueryTimelineEvent } from '@/lib/types';
 
 export function useQuery() {
   const [data, setData] = useState<QueryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [events, setEvents] = useState<QueryTimelineEvent[]>([]);
 
   async function submit(message: string) {
     setLoading(true);
     setError(null);
+    setData(null);
+    setEvents([]);
     try {
-      // Simulate API call with 1 second dela
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setData(MOCK_RESPONSE);
+      const response = await submitQueryWithProgress(message, (event) => {
+        setEvents((current) => [...current, event]);
+      });
+      setData(response);
+      return response;
     } catch (e) {
-      setError('Something went wrong. Try again.');
+      const messageText = e instanceof Error ? e.message : 'Something went wrong. Try again.';
+      setError(messageText);
+      throw e;
     } finally {
       setLoading(false);
     }
   }
 
-  return { data, loading, error, submit };
+  function reset() {
+    setData(null);
+    setLoading(false);
+    setError(null);
+    setEvents([]);
+  }
+
+  return { data, loading, error, events, submit, reset };
 }

@@ -177,9 +177,13 @@ def _fallback_plan(user_message: str, enriched_message: str = "") -> TaskPlanner
         ]
     ):
         tasks.append("navigator")
-        location_match = re.search(r"near\s+(\w+)|\s+at\s+(\w+)|locate\s+(\w+)", user_message)
+        location_match = re.search(
+            r"(?:\bnear\b|\bat\b|\blocate\b|\bfrom\b)\s+([a-zA-Z0-9][a-zA-Z0-9 .'-]{1,80})",
+            user_message,
+            re.IGNORECASE,
+        )
         if location_match:
-            loc = location_match.group(1) or location_match.group(2) or location_match.group(3)
+            loc = location_match.group(1).strip(" .,")
             constraints["location"] = loc
     if any(k in text for k in ["tutor", "office hours", "study resources", "help", "learn"]):
         tasks.append("study_resources")
@@ -333,43 +337,82 @@ def _enforce_navigation_intent(tasks: list[str], user_message: str, enriched_mes
 
 def _enforce_finance_intent(tasks: list[str], user_message: str, enriched_message: str) -> list[str]:
     combined_text = f"{user_message} {enriched_message}".lower()
-    has_budget_amount = bool(
-        re.search(r"\$(\d+(?:\.\d{1,2})?)", combined_text)
-        or re.search(
-            r"(?:under|within|below|max(?:imum)?|budget(?:ed)?(?:\s+of)?|around)\s*\$?\s*(\d{1,4}(?:\.\d{1,2})?)",
-            combined_text,
-        )
+    original_text = user_message.lower()
+    explicit_finance_terms = any(
+        token in combined_text
+        for token in [
+            "spend",
+            "spending",
+            "finance",
+            "money",
+            "cost breakdown",
+            "allocation",
+            "weekly",
+            "monthly",
+            "semester",
+            "save",
+            "afford",
+        ]
     )
-    planning_terms = any(
-        token in combined_text for token in ["plan", "weekly", "monthly", "semester", "spend", "budget", "afford"]
+    planning_terms = any(token in combined_text for token in ["plan", "track", "optimize", "rebalance", "breakdown", "manage"])
+    budget_present = bool(re.search(r"\$\s*\d+", combined_text)) or any(
+        token in combined_text for token in ["under", "within", "max", "maximum", "budget"]
     )
     student_spending_domains = any(
         token in combined_text
+        for token in ["dining", "food", "travel", "class", "tuition", "textbook", "events", "supplies", "rent"]
+    )
+    dining_only_intent = student_spending_domains and any(
+        token in combined_text for token in ["dinner", "lunch", "breakfast", "where to eat", "restaurant", "cafe"]
+    ) and not any(
+        token in combined_text for token in ["track", "weekly", "monthly", "spending", "rebalance", "allocation"]
+    )
+
+    pure_dining_place_query = any(
+        token in original_text
         for token in [
-            "dining",
-            "food",
-            "travel",
-            "metro",
-            "uber",
-            "class",
-            "tuition",
-            "textbook",
-            "events",
-            "club",
-            "supplies",
-            "rent",
+            "what to have for dinner",
+            "where to eat",
+            "dinner near",
+            "lunch near",
+            "breakfast near",
+            "restaurant near",
+            "food near",
+        ]
+    ) and not any(
+        token in original_text
+        for token in [
+            "budget plan",
+            "spending plan",
+            "weekly",
+            "monthly",
+            "allocation",
+            "track",
+            "finance",
+            "save",
+            "afford",
         ]
     )
 
-    if (has_budget_amount and student_spending_domains) or (
-        planning_terms and student_spending_domains and "finance" not in tasks
-    ):
+    if (explicit_finance_terms and student_spending_domains) or (planning_terms and student_spending_domains and budget_present):
         tasks = [*tasks, "finance"]
+
+    # Do not force finance for straightforward dining-place requests that merely include a price cap.
+    if dining_only_intent:
+        tasks = [task for task in tasks if task != "finance"]
+
+    if budget_present and planning_terms and student_spending_domains:
+        tasks = [*tasks, "finance"]
+
+    # Hard guard: pure dining-place queries with a simple price cap should not invoke finance.
+    if pure_dining_place_query:
+        tasks = [task for task in tasks if task != "finance"]
 
     return list(dict.fromkeys(tasks))
 
 
 def _enforce_precise_agent_activation(tasks: list[str], user_message: str, enriched_message: str) -> list[str]:
+    original_text = user_message.lower()
     combined_text = f"{user_message} {enriched_message}".lower()
 
     schedule_intent = any(
@@ -404,12 +447,42 @@ def _enforce_precise_agent_activation(tasks: list[str], user_message: str, enric
             "study group",
         ]
     )
+    events_intent = any(
+        token in original_text
+        for token in [
+            "event",
+            "events",
+            "workshop",
+            "seminar",
+            "club",
+            "concert",
+            "festival",
+            "career fair",
+        ]
+    )
+    dining_place_intent = any(
+        token in original_text
+        for token in [
+            "dining",
+            "dinner",
+            "lunch",
+            "breakfast",
+            "restaurant",
+            "cafe",
+            "where to eat",
+            "meal",
+            "food options",
+            "place to eat",
+        ]
+    )
 
     filtered = list(dict.fromkeys(tasks))
     if "schedule" in filtered and not schedule_intent:
         filtered = [task for task in filtered if task != "schedule"]
     if "study_resources" in filtered and not study_resources_intent:
         filtered = [task for task in filtered if task != "study_resources"]
+    if "dining" in filtered and events_intent and not dining_place_intent:
+        filtered = [task for task in filtered if task != "dining"]
 
     return filtered
 

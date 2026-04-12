@@ -1,0 +1,12 @@
+status 200
+data_sources {"campus": "gemini_after_web_failures", "off_campus": "gemini_after_web_failures", "web_menu": "none", "live_web_or_api_only": true, "gemini_used": true}
+warning Live dining web/API sources failed repeatedly; Gemini fallback used after retries.
+has_route_preview False
+has_web_refs False
+options_count 4
+menu_rec_count 0
+first_menu_ref None
+first_under_budget_items_count 0
+menu_item_counts []
+menu_item_samples []
+agent_step_events 13
