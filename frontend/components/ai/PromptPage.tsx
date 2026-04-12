@@ -6,97 +6,99 @@ interface PromptPageProps {
   onSubmit: (prompt: string) => void
 }
 
+const suggestionChips = [
+  { text: 'Where can I find vegetarian food nearby?', icon: '🥗' },
+  { text: 'What are the quiet study spots on campus?', icon: '📚' },
+  { text: 'How do I get to the library?', icon: '🗺️' },
+  { text: 'What events are happening this weekend?', icon: '🎉' },
+  { text: "Where's the best coffee on campus?", icon: '☕' },
+  { text: 'How do I register for classes?', icon: '📝' }
+]
+
 export default function PromptPage({ onSubmit }: PromptPageProps) {
   const [prompt, setPrompt] = useState('')
   const trimmedPrompt = prompt.trim()
   const isEnabled = trimmedPrompt.length > 0
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#f8fafc] to-[#f0f9ff] px-4 py-20">
-      <div className="mx-auto max-w-3xl">
-        {/* Header */}
-        <div className="mb-12 text-center">
-          <div className="inline-block rounded-full bg-[#E31937]/10 px-4 py-2 mb-4">
-            <p className="text-sm font-semibold text-[#E31937] uppercase tracking-wide">UMD College Park</p>
-          </div>
-          <h1 className="text-5xl font-black text-[#111827] mb-4">
-            Welcome to <span className="bg-gradient-to-r from-[#E31937] to-[#FFB81C] bg-clip-text text-transparent">TerpAI</span>
+    <div className="relative min-h-screen overflow-y-auto px-4 py-10 pb-16 text-white">
+      <div className="fixed inset-0 bg-gradient-to-br from-[#001f3f] via-[#0a0a0a] to-[#000000]" />
+      <div
+        className="fixed inset-0 opacity-10"
+        style={{
+          backgroundImage:
+            'radial-gradient(ellipse at 20% 20%, rgba(227, 25, 55, 0.08) 0%, transparent 50%), radial-gradient(ellipse at 80% 80%, rgba(255, 184, 28, 0.06) 0%, transparent 50%)'
+        }}
+      />
+
+      <div className="relative z-10 mx-auto max-w-3xl">
+        <div className="mb-12 text-center animate-in fade-in slide-in-from-top-4 duration-1000">
+          <h1 className="mb-4 text-6xl font-black tracking-tight text-white sm:text-7xl">
+            Welcome to{' '}
+            <span className="bg-gradient-to-r from-[#E31937] to-[#FFB81C] bg-clip-text text-transparent">
+              TerpAI
+            </span>
           </h1>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto">
-            Ask your campus questions and watch AI agents work in parallel to find you answers.
+          <p className="mx-auto max-w-2xl text-xl font-light leading-relaxed text-gray-300">
+            Ask anything about campus and your AI agents will find the answers in seconds.
           </p>
         </div>
 
-        {/* Main card */}
-        <div className="rounded-2xl border border-[#E31937]/10 bg-white shadow-xl overflow-hidden">
-          {/* Top accent bar */}
-          <div className="h-1 bg-gradient-to-r from-[#E31937] to-[#FFB81C]"></div>
-          
-          <div className="p-8 space-y-6">
-            {/* Quick suggestions */}
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Try asking about</p>
-              <div className="flex flex-wrap gap-2">
-                {['Dining options', 'Study spots', 'Class schedule', 'Campus routes'].map((tag) => (
-                  <button
-                    key={tag}
-                    onClick={() => setPrompt(tag)}
-                    className="rounded-full border border-[#FFB81C]/30 bg-[#FFB81C]/5 px-4 py-2 text-sm font-medium text-[#92400E] hover:bg-[#FFB81C]/10 transition"
-                  >
-                    {tag}
-                  </button>
-                ))}
+        <div className="overflow-hidden rounded-3xl animate-in fade-in slide-in-from-bottom-4 duration-1000 delay-300">
+          <div className="rounded-3xl bg-[#1a1a1a]/90 p-8 shadow-2xl border border-[#E31937]/20 shadow-red-500/10 backdrop-blur-2xl">
+            <div className="flex flex-col gap-6">
+              <div className="space-y-6">
+                <p className="text-center text-sm font-medium uppercase tracking-wider text-gray-400">
+                  Try asking
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {suggestionChips.map(({ text, icon }) => (
+                    <button
+                      key={text}
+                      onClick={() => setPrompt(text)}
+                      className="group inline-flex items-center gap-3 rounded-full border border-[#FFB81C]/20 bg-[#FFB81C]/8 px-5 py-3 text-left backdrop-blur-sm transition-all duration-300 hover:scale-105 hover:border-[#FFB81C]/40 hover:bg-[#FFB81C]/15 hover:shadow-lg hover:shadow-yellow-400/20"
+                    >
+                      <span className="shrink-0 text-lg transition-transform duration-200 group-hover:scale-110">
+                        {icon}
+                      </span>
+                      <span className="text-sm font-medium text-[#FFB81C] group-hover:text-yellow-200">
+                        {text}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            {/* Text input */}
-            <div className="space-y-2">
-              <label className="block text-sm font-semibold text-[#111827]">
-                Your Question
-              </label>
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Where is the nearest Chick-fil-A? How do I get to the library? What events are happening today?"
-                className="w-full min-h-32 p-4 border-2 border-gray-200 rounded-lg focus:border-[#E31937] focus:ring-2 focus:ring-[#E31937]/20 outline-none transition text-base text-[#111827] placeholder-gray-400"
-              />
-            </div>
+              <div className="group relative animate-in fade-in slide-in-from-bottom-4 duration-1000 delay-500">
+                <div className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-r from-[#E31937] via-[#FFB81C] to-[#E31937] opacity-0 blur-2xl transition-all duration-500 group-focus-within:opacity-20" />
+                <div className="relative rounded-2xl border border-gray-700/30 bg-[#0a0a0a]/95 shadow-2xl shadow-black/40 transition-all duration-500 group-focus-within:border-[#E31937]/40">
+                  <textarea
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.ctrlKey && isEnabled) {
+                        onSubmit(trimmedPrompt)
+                      }
+                    }}
+                    placeholder="What would you like to know about campus?"
+                    className="min-h-32 max-h-56 w-full resize-none rounded-2xl bg-transparent p-8 text-lg font-light leading-relaxed text-white outline-none placeholder:text-gray-400"
+                  />
+                </div>
+              </div>
 
-            {/* Submit button */}
-            <button
-              onClick={() => onSubmit(trimmedPrompt)}
-              disabled={!isEnabled}
-              className={`w-full font-bold py-4 px-6 rounded-lg transition-all duration-200 transform ${
-                isEnabled
-                  ? 'bg-gradient-to-r from-[#E31937] to-[#FFB81C] text-white hover:shadow-lg hover:scale-105 active:scale-95 cursor-pointer'
-                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              }`}
-            >
-              {isEnabled ? '🚀 Run Agents' : '✏️ Enter a question to start'}
-            </button>
-
-            {/* Info footer */}
-            <div className="bg-[#F8FAFC] rounded-lg p-4 text-sm text-gray-600 text-center border border-gray-200">
-              <p>
-                <strong className="text-[#E31937]">How it works:</strong> Your question gets split into tasks for parallel AI agents (Search, Location, Insights) that work together to give you the best answer.
-              </p>
+              <button
+                onClick={() => onSubmit(trimmedPrompt)}
+                disabled={!isEnabled}
+                className={`w-full rounded-2xl px-8 py-5 text-lg font-bold transition-all duration-500 animate-in fade-in slide-in-from-bottom-4 delay-700 ${
+                  isEnabled
+                    ? 'bg-gradient-to-r from-[#E31937] via-[#FFB81C] to-[#E31937] text-white shadow-2xl shadow-red-500/40 hover:scale-[1.02] hover:from-[#E31937]/90 hover:via-[#FFB81C]/90 hover:to-[#E31937]/90'
+                    : 'cursor-not-allowed border border-gray-700/30 bg-gray-800/50 text-gray-500'
+                }`}
+              >
+                {isEnabled ? 'Run agents' : 'Enter your question'}
+              </button>
             </div>
           </div>
-        </div>
-
-        {/* Feature cards */}
-        <div className="mt-12 grid md:grid-cols-3 gap-4">
-          {[
-            { icon: '🔍', title: 'Smart Search', desc: 'Intelligent queries' },
-            { icon: '📍', title: 'Location Aware', desc: 'UMD context' },
-            { icon: '⚡', title: 'Real-time AI', desc: 'Parallel agents' },
-          ].map((feature) => (
-            <div key={feature.title} className="rounded-lg bg-white/50 backdrop-blur border border-white p-4 text-center hover:shadow-md transition">
-              <div className="text-2xl mb-2">{feature.icon}</div>
-              <h3 className="font-semibold text-[#111827]">{feature.title}</h3>
-              <p className="text-xs text-gray-500">{feature.desc}</p>
-            </div>
-          ))}
         </div>
       </div>
     </div>

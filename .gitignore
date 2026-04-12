@@ -34,6 +34,10 @@ Thumbs.db
 logs
 *.log
 
+# Python caches
+__pycache__/
+*.py[cod]
+
 # Package files
 package.json
 package-lock.json

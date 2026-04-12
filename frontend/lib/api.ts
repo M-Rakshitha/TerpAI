@@ -6,8 +6,13 @@ export interface QuerySubmitContext {
   location_permission_granted?: boolean;
 }
 
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8020';
-const LOCAL_FALLBACK_API_URLS = ['http://127.0.0.1:8020', 'http://localhost:8000'];
+const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
+const LOCAL_FALLBACK_API_URLS = [
+  'http://127.0.0.1:8000',
+  'http://localhost:8000',
+  'http://127.0.0.1:8020',
+  'http://localhost:8020',
+];
 
 function getApiBaseUrl() {
   return (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
@@ -18,8 +23,8 @@ function getApiBaseUrlCandidates() {
   return Array.from(new Set([configured, ...LOCAL_FALLBACK_API_URLS]));
 }
 
-function buildWebSocketUrl() {
-  const baseUrl = new URL(getApiBaseUrl());
+function buildWebSocketUrl(baseApiUrl: string) {
+  const baseUrl = new URL(baseApiUrl);
   baseUrl.protocol = baseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
   baseUrl.pathname = '/ws/query';
   baseUrl.search = '';
@@ -80,63 +85,76 @@ async function submitQueryViaWebSocket(
   submitContext?: QuerySubmitContext,
   onEvent?: (event: QueryTimelineEvent) => void,
 ): Promise<QueryResponse> {
-  return new Promise<QueryResponse>((resolve, reject) => {
-    const socket = new WebSocket(buildWebSocketUrl());
-    let resolved = false;
+  const candidates = getApiBaseUrlCandidates();
+  let lastError: Error | null = null;
 
-    const finish = (response: QueryResponse) => {
-      if (resolved) {
-        return;
-      }
-      resolved = true;
-      try {
-        socket.close();
-      } catch {
-        // ignore close errors in fallback paths
-      }
-      resolve(response);
-    };
+  for (const baseUrl of candidates) {
+    try {
+      const response = await new Promise<QueryResponse>((resolve, reject) => {
+        const socket = new WebSocket(buildWebSocketUrl(baseUrl));
+        let resolved = false;
 
-    socket.onopen = () => {
-      socket.send(
-        JSON.stringify({
-          message,
-          request_id: crypto.randomUUID?.() || `${Date.now()}`,
-          debug_trace_context: true,
-          ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
-          ...(submitContext?.current_location_coords
-            ? { current_location_coords: submitContext.current_location_coords }
-            : {}),
-          ...(typeof submitContext?.location_permission_granted === 'boolean'
-            ? { location_permission_granted: submitContext.location_permission_granted }
-            : {}),
-        }),
-      );
-    };
+        const finish = (queryResponse: QueryResponse) => {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          try {
+            socket.close();
+          } catch {
+            // ignore close errors in fallback paths
+          }
+          resolve(queryResponse);
+        };
 
-    socket.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(String(event.data)) as QueryTimelineEvent;
-        onEvent?.(parsed);
+        socket.onopen = () => {
+          socket.send(
+            JSON.stringify({
+              message,
+              request_id: crypto.randomUUID?.() || `${Date.now()}`,
+              debug_trace_context: true,
+              ...(submitContext?.user_location ? { user_location: submitContext.user_location } : {}),
+              ...(submitContext?.current_location_coords
+                ? { current_location_coords: submitContext.current_location_coords }
+                : {}),
+              ...(typeof submitContext?.location_permission_granted === 'boolean'
+                ? { location_permission_granted: submitContext.location_permission_granted }
+                : {}),
+            }),
+          );
+        };
 
-        if (parsed.type === 'query_result' && parsed.payload && typeof parsed.payload === 'object') {
-          finish(parsed.payload as QueryResponse);
-        }
-      } catch (error) {
-        reject(error);
-      }
-    };
+        socket.onmessage = (event) => {
+          try {
+            const parsed = JSON.parse(String(event.data)) as QueryTimelineEvent;
+            onEvent?.(parsed);
 
-    socket.onerror = () => {
-      reject(new Error('WebSocket connection failed'));
-    };
+            if (parsed.type === 'query_result' && parsed.payload && typeof parsed.payload === 'object') {
+              finish(parsed.payload as QueryResponse);
+            }
+          } catch (error) {
+            reject(error);
+          }
+        };
 
-    socket.onclose = () => {
-      if (!resolved) {
-        reject(new Error('WebSocket closed before a final response arrived'));
-      }
-    };
-  });
+        socket.onerror = () => {
+          reject(new Error(`WebSocket connection failed for ${baseUrl}`));
+        };
+
+        socket.onclose = () => {
+          if (!resolved) {
+            reject(new Error(`WebSocket closed before a final response arrived for ${baseUrl}`));
+          }
+        };
+      });
+
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('WebSocket connection failed');
+    }
+  }
+
+  throw lastError || new Error('Unable to reach backend websocket.');
 }
 
 export async function submitQueryWithProgress(
