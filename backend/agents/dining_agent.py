@@ -772,6 +772,67 @@ def _is_nearby_beverage_fastpath(
     return asks_nearby and asks_beverage and bool(user_location) and not has_constraints
 
 
+def _looks_like_lat_lng_label(text: str) -> bool:
+    s = str(text).strip()
+    if "," not in s:
+        return False
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) != 2:
+        return False
+    try:
+        lat = float(parts[0])
+        lng = float(parts[1])
+    except ValueError:
+        return False
+    return abs(lat) <= 90 and abs(lng) <= 180
+
+
+_CAMPUS_WIDE_LOCATION_NOISE: frozenset[str] = frozenset(
+    {
+        "umd",
+        "u md",
+        "university of maryland",
+        "university of maryland college park",
+        "um college park",
+        "umcp",
+        "college park",
+        "college park md",
+        "college park, md",
+        "maryland",
+        "terps",
+        "campus",
+        "on campus",
+        "around campus",
+        "near campus",
+        "the campus",
+        "current location",
+        "my location",
+        "here",
+    }
+)
+
+
+def _is_precise_user_location_label(label: str) -> bool:
+    """True for a building, address, or lat,lng — not whole-campus phrases like 'UMD' from 'near UMD'."""
+    raw = str(label).strip()
+    if not raw:
+        return False
+    if _looks_like_lat_lng_label(raw):
+        return True
+    normalized = re.sub(r"\s+", " ", raw.lower()).strip("., ")
+    if len(normalized) < 2:
+        return False
+    if normalized in _CAMPUS_WIDE_LOCATION_NOISE:
+        return False
+    if normalized in {"cp", "md"}:
+        return False
+    noise_tokens = frozenset({"umd", "maryland", "terps", "campus", "college", "park", "here"})
+    tokens = [t for t in re.split(r"[^a-z0-9]+", normalized) if t]
+    if tokens and len(tokens) <= 2 and all(t in noise_tokens for t in tokens):
+        return False
+    return True
+
+
 def _extract_origin_from_message(message: str) -> str | None:
     if not message:
         return None
@@ -850,12 +911,17 @@ def _query_nominatim_restaurants(origin_label: str, limit: int = 12) -> list[dic
 
 
 def _infer_dietary_from_tags(tags: dict[str, Any]) -> list[str]:
+    """Read both OSM tag keys (e.g. diet:vegan) and values."""
     dietary: list[str] = []
-    text = " ".join(str(v).lower() for v in tags.values())
+    parts: list[str] = []
+    for key, value in tags.items():
+        parts.append(str(key).lower().replace(":", " ").replace("_", " "))
+        parts.append(str(value).lower())
+    text = " ".join(parts)
     for label, needles in DIETARY_KEYWORDS.items():
         if any(needle in text for needle in needles):
             dietary.append(label)
-    return dietary
+    return list(dict.fromkeys(dietary))
 
 
 def _estimate_price_for_off_campus(tags: dict[str, Any]) -> float:
@@ -872,23 +938,70 @@ def _estimate_walk_minutes(origin: tuple[float, float], destination: tuple[float
     return max(2, int(round(km * 12)))
 
 
+_ANCHOR_GENERIC_TOKENS = frozenset(
+    {
+        "dining",
+        "hall",
+        "cafeteria",
+        "cafe",
+        "food",
+        "restaurant",
+        "center",
+        "centre",
+        "building",
+        "campus",
+        "north",
+        "south",
+        "east",
+        "west",
+        "college",
+        "park",
+        "library",
+        "kitchen",
+        "market",
+    }
+)
+
+
+def _user_anchor_matches_place_name(user_hint: str, place_name: str) -> bool:
+    """True when the user said they are at / near this named venue (e.g. Yahentamitsi)."""
+    a = re.sub(r"\s+", " ", str(user_hint).strip().lower())
+    b = re.sub(r"\s+", " ", str(place_name).strip().lower())
+    if len(a) < 3 or len(b) < 3:
+        return False
+    if a in b or b in a:
+        return True
+    a_tokens = [
+        t
+        for t in re.split(r"[^a-z0-9]+", a)
+        if len(t) >= 4 and t not in _ANCHOR_GENERIC_TOKENS
+    ]
+    return bool(a_tokens) and any(t in b for t in a_tokens)
+
+
 def _build_option(
     name: str,
     budget: float | None,
     source: str = "campus",
     origin_coords: tuple[float, float] | None = None,
+    user_location_hint: str | None = None,
 ) -> dict[str, Any]:
     coords: tuple[float, float] | None = None
     distance_min: int | None = None
     estimated_meal_price: float | None = None
     budget_ok: bool | None = None
     hours_open: bool | None = None
-    if source == "campus" and origin_coords is not None and coords is not None:
-        distance_min = _estimate_walk_minutes(origin_coords, coords)
     if source == "campus":
         estimated_meal_price = 12.0
         budget_ok = budget is None or budget >= estimated_meal_price
         hours_open = True
+        if (
+            origin_coords is not None
+            and user_location_hint
+            and _user_anchor_matches_place_name(user_location_hint, name)
+        ):
+            coords = origin_coords
+            distance_min = max(1, _estimate_walk_minutes(origin_coords, origin_coords))
 
     return {
         "name": name,
@@ -919,21 +1032,45 @@ def _node_ingest_context(state: DiningState) -> DiningState:
     menu_preferences.extend(_extract_menu_preferences(message))
     menu_preferences = list(dict.fromkeys([m.lower().strip() for m in menu_preferences if str(m).strip()]))
 
-    user_location = (
+    loc_obj = context.get("location")
+    location_coords: tuple[float, float] | None = None
+    if isinstance(loc_obj, dict):
+        lat = loc_obj.get("lat")
+        lng = loc_obj.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            location_coords = (float(lat), float(lng))
+
+    raw_location = (
         context.get("user_location")
         or context.get("origin")
-        or context.get("location")
+        or (loc_obj if isinstance(loc_obj, str) and str(loc_obj).strip() else None)
         or context.get("location_mentioned")
         or _extract_origin_from_message(message)
     )
     selected_option = context.get("selected_dining_option") or context.get("selected_option")
 
-    location_coords = None
-    if isinstance(user_location, str) and user_location.strip():
+    user_location: str | None = None
+    if isinstance(raw_location, str) and raw_location.strip():
+        cand = raw_location.strip()
+        if _looks_like_lat_lng_label(cand):
+            user_location = cand
+            if location_coords is None:
+                parts = [p.strip() for p in cand.split(",")]
+                try:
+                    location_coords = (float(parts[0]), float(parts[1]))
+                except (ValueError, IndexError):
+                    pass
+        elif _is_precise_user_location_label(cand):
+            user_location = cand
+
+    if location_coords is None and user_location and not _looks_like_lat_lng_label(user_location):
         try:
             location_coords = _geocode_location(user_location)
         except Exception:
             location_coords = None
+
+    if location_coords is not None and user_location is None:
+        user_location = f"{location_coords[0]},{location_coords[1]}"
 
     return {
         "user_message": message,
@@ -949,6 +1086,7 @@ def _node_ingest_context(state: DiningState) -> DiningState:
 def _node_fetch_campus_options(state: DiningState) -> DiningState:
     budget = state.get("budget")
     origin_coords = state.get("location_coords")
+    user_location_hint = str(state.get("user_location") or "").strip() or None
     try:
         fetched = _fetch_live_dining_names()
         if isinstance(fetched, tuple) and len(fetched) == 3:
@@ -967,7 +1105,13 @@ def _node_fetch_campus_options(state: DiningState) -> DiningState:
         names = []
     return {
         "campus_options": [
-            _build_option(name, budget, source="campus", origin_coords=origin_coords)
+            _build_option(
+                name,
+                budget,
+                source="campus",
+                origin_coords=origin_coords,
+                user_location_hint=user_location_hint,
+            )
             for name in names
         ],
         "campus_source": source,

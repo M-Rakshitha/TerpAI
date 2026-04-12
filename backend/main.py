@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from backend.agents.aggregator import aggregate
 from backend.agents.router import run_agents
 from backend.agents.task_planner import run as run_task_planner
+from backend.integrations.google_calendar_routes import router as google_calendar_router
 from backend.models.schemas import QueryRequest, QueryResponse, QueryResults, TaskPlannerContext, TaskPlannerResponse
 from backend.utils.env_loader import load_backend_env
 from backend.utils.ai_workflow import call_gemini_with_retry
@@ -1179,6 +1180,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(google_calendar_router)
 
 
 @app.get("/health")

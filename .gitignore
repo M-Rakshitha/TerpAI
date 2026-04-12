@@ -50,3 +50,4 @@ yarn.lock
 .env
 .env.*
 backend/.env
+backend/data/

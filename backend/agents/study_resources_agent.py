@@ -129,8 +129,14 @@ def _extract_professor_name_hint(message: str) -> str | None:
 
 
 async def run(context: dict) -> dict:
-    course = str(context.get("course") or "").strip()
-    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "").strip()
+    course = str(context.get("course") or context.get("subject") or "").strip()
+    user_message = str(
+        context.get("agent_prompt")
+        or context.get("user_message")
+        or context.get("enriched_query")
+        or course
+        or ""
+    ).strip()
 
     if not user_message:
         return _empty_result("Study resources agent requires a clear request in the prompt", web_used=False)
@@ -279,4 +285,31 @@ async def run(context: dict) -> dict:
         error = f"Study resources generation failed: {type(exc).__name__}: {exc}"
         if strict_live_mode_enabled():
             return _empty_result(error, web_used=True)
-        return _empty_result(error, web_used=True)
+        resource_rows = [
+            {
+                "name": str(item.get("title") or "UMD resource"),
+                "category": "library",
+                "url": str(item.get("url") or ""),
+                "why_useful": "Live search hit; open the page for hours and contact details.",
+            }
+            for item in evidence[:10]
+            if isinstance(item, dict) and str(item.get("url") or "").strip()
+        ]
+        return {
+            "agent": "study_resources",
+            "tutoring": [],
+            "office_hours": [],
+            "resources": resource_rows,
+            "advisor_notes": [
+                "AI formatting failed; showing direct links from live evidence.",
+                error,
+            ],
+            "web_references": web_references[:15],
+            "data_sources": {
+                "api_sources": ["planetterp", "umdio", "web_search"],
+                "provider": "planetterp+duckduckgo_html",
+                "gemini_used": False,
+                "web_evidence_count": len(evidence),
+            },
+            "warning": error,
+        }

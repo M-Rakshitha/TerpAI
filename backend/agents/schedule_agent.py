@@ -312,7 +312,14 @@ def _empty_result(error: str, web_used: bool) -> dict[str, Any]:
 
 
 async def run(context: dict) -> dict:
-    user_message = str(context.get("agent_prompt") or context.get("user_message") or context.get("enriched_query") or "").strip()
+    user_message = str(
+        context.get("agent_prompt")
+        or context.get("user_message")
+        or context.get("enriched_query")
+        or context.get("subject")
+        or context.get("course")
+        or ""
+    ).strip()
     if not user_message:
         return _empty_result("Schedule agent requires a clear scheduling request in the prompt", web_used=False)
 
