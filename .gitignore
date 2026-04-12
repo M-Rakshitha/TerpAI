@@ -38,11 +38,6 @@ logs
 __pycache__/
 *.py[cod]
 
-# Package files
-package.json
-package-lock.json
-yarn.lock
-
 # Build artifacts
 .next/
 .next/types/
