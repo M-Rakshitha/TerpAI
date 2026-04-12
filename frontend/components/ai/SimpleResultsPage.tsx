@@ -48,7 +48,7 @@ export default function SimpleResultsPage({ prompt, onBack }: SimpleResultsPageP
                       borderTopColor: '#E31937'
                     }} />
                   </div>
-                  <p className="text-gray-300 mt-4 text-lg font-medium">AI Agents are processing your question...</p>
+                  <p className="text-gray-300 mt-4 text-lg font-medium">CampusPilot agents are processing your question...</p>
                   <p className="text-gray-500 mt-2">This may take a few moments</p>
                 </div>
 

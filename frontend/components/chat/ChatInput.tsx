@@ -27,7 +27,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSubmit, loading, error }) => {
       <form onSubmit={handleSubmit} className="flex gap-2">
         <Input
           type="text"
-          placeholder="Ask TerpAI anything..."
+          placeholder="Ask CampusPilot anything..."
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           disabled={loading}

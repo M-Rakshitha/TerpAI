@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useUser } from '@auth0/nextjs-auth0/client';
+import { useUser } from '@auth0/nextjs-auth0';
 import { EventsResult } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -54,7 +54,7 @@ const EventsCard: React.FC<EventsCardProps> = ({ data }) => {
           title: event.title,
           location: event.location,
           start: event.start,
-          description: `TerpAI campus event. Tags: ${event.tags.join(', ')}`,
+          description: `CampusPilot campus event. Tags: ${event.tags.join(', ')}`,
         }),
       });
       const json = (await res.json()) as { html_link?: string; detail?: string; ok?: boolean };

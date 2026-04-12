@@ -27,16 +27,20 @@ interface AgentsPageProps {
 
 const agentColors: Record<string, string> = {
   Initializing: 'bg-[#FEF3C7] text-[#7A5A00]',
-  Running: 'bg-[#FFE7EB] text-[#C8102E]',
+  Running: 'bg-[#DBEAFE] text-[#1D4ED8]',
   Waiting: 'bg-[#E5E7EB] text-[#374151]',
-  Completed: 'bg-[#FFF8CC] text-[#7A5A00]',
+  Completed: 'bg-[#DCFCE7] text-[#15803D]',
   Attention: 'bg-[#FEE2E2] text-[#991B1B]',
   Queued: 'bg-[#E5E7EB] text-[#374151]',
 }
 
 export default function AgentsPage({ query, stages, response, onRevealSummary, onReset, statusLabel }: AgentsPageProps) {
   const visibleStages = stages
-    .filter((stage) => ['Queued', 'Running', 'Completed', 'Attention'].includes(stage.status))
+    .filter((stage) => {
+      if (!['Queued', 'Running', 'Completed', 'Attention'].includes(stage.status)) return false
+      if (stage.name.trim().toLowerCase() === 'aggregator' && stage.status === 'Queued') return false
+      return true
+    })
     .reduce<LiveStage[]>((acc, stage) => {
       const key = stage.name.trim().toLowerCase()
       const existingIndex = acc.findIndex((item) => item.name.trim().toLowerCase() === key)
@@ -57,8 +61,13 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
   const activatedAgents = Array.from(new Set(visibleStages
     .filter((stage) => !['Task Planner', 'Aggregator'].includes(stage.name))
     .map((stage) => stage.name.trim().toLowerCase())))
-  const summaryTitle = response?.presentation?.summary?.title || 'TerpAI completed the workflow and returned the result below.'
-  const workflowComplete = Boolean(response) && !response?.awaiting_user_input && !statusLabel?.toLowerCase().includes('error')
+  const summaryTitle = response?.presentation?.summary?.title || 'CampusPilot completed the workflow and returned the result below.'
+  const workflowComplete =
+    Boolean(response) &&
+    !response?.awaiting_user_input &&
+    !statusLabel?.toLowerCase().includes('error') &&
+    visibleStages.length > 0 &&
+    visibleStages.every((stage) => stage.status === 'Completed')
   const runningCount = visibleStages.filter((stage) => stage.status === 'Running').length
   const queuedCount = visibleStages.filter((stage) => stage.status === 'Queued').length
   const completedCount = visibleStages.filter((stage) => stage.status === 'Completed').length
@@ -74,6 +83,14 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
     return 8
   }
 
+  const formatStageStepIndex = (stage: LiveStage) => {
+    if (typeof stage.currentStep !== 'number' || typeof stage.totalSteps !== 'number' || stage.totalSteps <= 0) {
+      return null
+    }
+
+    return `Step ${Math.min(Math.max(stage.currentStep, 1), stage.totalSteps)} of ${stage.totalSteps}`
+  }
+
   const progressSegments = (stage: LiveStage, segments = 6) => {
     const progress = stageProgress(stage)
     const activeCount = Math.max(1, Math.round((progress / 100) * segments))
@@ -85,15 +102,21 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
       .replace(/_/g, ' ')
       .replace(/\b\w/g, (char) => char.toUpperCase())
 
-  const pickCurrentStep = (stage: LiveStage): { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string } | null => {
+  const pickCurrentStep = (stage: LiveStage): { title: string; status: 'running' | 'completed' | 'failed' | 'queued'; message: string; stepNumber?: number } | null => {
     if (!stage.steps || stage.steps.length === 0) return null
 
+    const currentStepNumber = typeof stage.currentStep === 'number' ? stage.currentStep : undefined
+
     if (stage.status === 'Completed') {
-      const last = [...stage.steps].reverse().find((step) => step.status === 'completed') || stage.steps[stage.steps.length - 1]
+      const last =
+        (currentStepNumber !== undefined && stage.steps.find((step) => step.stepNumber === currentStepNumber && step.status === 'completed')) ||
+        [...stage.steps].reverse().find((step) => step.status === 'completed') ||
+        stage.steps[stage.steps.length - 1]
       return {
         title: last.title,
         status: 'completed',
         message: stage.completionMessage || stage.detail || 'All steps completed.',
+        stepNumber: last.stepNumber,
       }
     }
 
@@ -102,6 +125,7 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
     }
 
     return (
+      (currentStepNumber !== undefined && stage.steps.find((step) => step.stepNumber === currentStepNumber)) ||
       stage.steps.find((step) => step.status === 'running') ||
       stage.steps.find((step) => step.status === 'queued') ||
       stage.steps[stage.steps.length - 1]
@@ -109,9 +133,19 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
   }
 
   const stageHeadline = (stage: LiveStage) => {
-    if (stage.detail) return stage.detail
     const currentStep = pickCurrentStep(stage)
-    if (currentStep?.message) return currentStep.message
+    if (currentStep) {
+      const stepIndex = currentStep.stepNumber ? `Step ${currentStep.stepNumber}` : formatStageStepIndex(stage)
+      const title = stepIndex ? `${stepIndex} · ${currentStep.title}` : currentStep.title
+      if (stage.status === 'Running' || stage.status === 'Queued') {
+        return currentStep.message ? `${title} · ${currentStep.message}` : title
+      }
+      if (stage.status === 'Completed') {
+        return currentStep.message || stage.completionMessage || 'Workflow completed successfully.'
+      }
+      return currentStep.message ? `${title} · ${currentStep.message}` : title
+    }
+    if (stage.detail) return stage.detail
     if (stage.status === 'Completed') return stage.completionMessage || 'Workflow completed successfully.'
     return 'Waiting for live update...'
   }
@@ -132,7 +166,7 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-3">
               <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Agent launch pad</p>
-              <h2 className="text-4xl font-black text-white">Campus AI agents are running</h2>
+              <h2 className="text-4xl font-bold text-white">CampusPilot agents are running</h2>
               <p className="max-w-2xl text-base leading-7 text-gray-300">
                 The task planner runs first, then only the selected agents appear here, and finally the aggregator completes the response.
               </p>
@@ -157,7 +191,7 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
               </div>
               <div className="rounded-2xl border border-white/10 bg-[#111827] px-4 py-3 text-xs uppercase tracking-[0.18em] text-gray-300">
                 <div className="flex flex-wrap items-center gap-3">
-                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#22C55E]" />{runningCount} running</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#2563EB]" />{runningCount} running</span>
                   <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#9CA3AF]" />{queuedCount} queued</span>
                   <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#16A34A]" />{completedCount} done</span>
                   {attentionCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-[#DC2626]" />{attentionCount} attention</span>}
@@ -173,12 +207,13 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                     {activatedAgents.map((agent) => {
                       const stage = visibleStages.find((item) => item.name.trim().toLowerCase() === agent)
                       const running = stage?.status === 'Running'
+                      const completed = stage?.status === 'Completed'
                       return (
                         <span
                           key={agent}
                           className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#111827] px-3 py-1 text-xs font-semibold text-gray-200"
                         >
-                          <span className={`h-2 w-2 rounded-full ${running ? 'animate-pulse bg-[#C8102E]' : stage?.status === 'Completed' ? 'bg-[#FFD200]' : stage?.status === 'Attention' ? 'bg-[#DC2626]' : 'bg-[#9CA3AF]'}`} />
+                          <span className={`h-2 w-2 rounded-full ${running ? 'animate-pulse bg-[#2563EB]' : completed ? 'bg-[#16A34A]' : stage?.status === 'Attention' ? 'bg-[#DC2626]' : 'bg-[#9CA3AF]'}`} />
                           {agentPill(agent)}
                         </span>
                       )
@@ -193,10 +228,16 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                     <div>
                       <p className="text-xs uppercase tracking-[0.3em] text-[#FFD200]">{agentPill(stage.name)}</p>
                       <p className="mt-2 text-lg font-semibold text-white">{stage.description}</p>
-                      <p className="mt-2 text-sm text-gray-300">{stageHeadline(stage)}</p>
+                      {stage.status !== 'Completed' && (
+                        <p className="mt-2 text-sm font-medium text-[#DBEAFE]">Running step</p>
+                      )}
+                      <p className={`${stage.status === 'Completed' ? 'mt-2' : 'mt-1'} text-sm text-gray-300`}>
+                        {stageHeadline(stage)}
+                      </p>
                     </div>
                     <span className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ${agentColors[stage.status] || agentColors.Waiting}`}>
-                      {stage.status === 'Running' && <span className="h-2 w-2 animate-pulse rounded-full bg-[#C8102E]" />}
+                      {stage.status === 'Running' && <span className="h-2 w-2 animate-pulse rounded-full bg-[#2563EB]" />}
+                      {stage.status === 'Completed' && <span className="h-2 w-2 rounded-full bg-[#16A34A]" />}
                       {stage.status}
                     </span>
                   </div>
@@ -212,8 +253,8 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
                                 ? stage.status === 'Attention'
                                   ? 'bg-[#DC2626]'
                                   : stage.status === 'Completed'
-                                    ? 'bg-[#FFD200]'
-                                    : 'animate-pulse bg-[#C8102E]'
+                                    ? 'bg-[#16A34A]'
+                                    : 'animate-pulse bg-[#2563EB]'
                                 : 'bg-white/10'
                             }`}
                           />
@@ -226,22 +267,22 @@ export default function AgentsPage({ query, stages, response, onRevealSummary, o
             </div>
           </div>
 
-          <div className="rounded-[32px] border border-[#E31937]/20 bg-[#1a1a1a]/90 p-6 shadow-2xl shadow-black/20">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Aggregator summary</p>
-                <h3 className="mt-2 text-2xl font-bold text-white">{summaryTitle}</h3>
-              </div>
-              {workflowComplete && (
+          {workflowComplete && (
+            <div className="rounded-[32px] border border-[#E31937]/20 bg-[#1a1a1a]/90 p-6 shadow-2xl shadow-black/20">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.3em] text-[#FFB81C]">Aggregator summary</p>
+                  <h3 className="mt-2 text-2xl font-bold text-white">{summaryTitle}</h3>
+                </div>
                 <button
                   onClick={onRevealSummary}
                   className="inline-flex items-center justify-center rounded-[28px] border border-[#F59E0B]/40 bg-[#111827] px-6 py-3 text-sm font-semibold text-[#FDE68A] shadow-lg shadow-black/30 transition hover:border-[#FBBF24] hover:bg-[#1f2937] hover:text-[#FEF3C7]"
                 >
                   View polished report
                 </button>
-              )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
