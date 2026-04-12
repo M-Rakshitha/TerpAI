@@ -41,11 +41,39 @@ MAX_NEARBY_KM = 6.0
 
 FALLBACK_SEED_OPTIONS = [
     {
+        "name": "McKeldin Dining Hall",
+        "query": "McKeldin Dining Hall UMD College Park",
+        "estimated_meal_price": 16.0,
+        "dietary_tags": ["cafeteria", "multiple-options"],
+        "menu_highlights": ["pizza", "pasta", "salads", "grill"],
+    },
+    {
+        "name": "South Campus Dining Hall",
+        "query": "South Campus Dining Hall UMD College Park",
+        "estimated_meal_price": 16.0,
+        "dietary_tags": ["cafeteria", "multiple-options"],
+        "menu_highlights": ["asian fusion", "sandwiches", "desserts"],
+    },
+    {
         "name": "NuVegan Cafe",
         "query": "NuVegan Cafe College Park",
         "estimated_meal_price": 14.0,
         "dietary_tags": ["vegan", "plant-based"],
         "menu_highlights": ["vegan bowls", "plant-based entrees"],
+    },
+    {
+        "name": "The Board and Brew",
+        "query": "The Board and Brew College Park",
+        "estimated_meal_price": 12.0,
+        "dietary_tags": ["burgers", "casual"],
+        "menu_highlights": ["craft burgers", "fries", "beer selection"],
+    },
+    {
+        "name": "The Marathon Deli",
+        "query": "The Marathon Deli College Park",
+        "estimated_meal_price": 10.0,
+        "dietary_tags": ["sandwiches", "budget-friendly"],
+        "menu_highlights": ["greek sandwiches", "quick bites"],
     },
     {
         "name": "Gangster Vegan Organics",
@@ -60,6 +88,13 @@ FALLBACK_SEED_OPTIONS = [
         "estimated_meal_price": 12.0,
         "dietary_tags": ["vegan", "plant-based"],
         "menu_highlights": ["vegan burgers", "fries"],
+    },
+    {
+        "name": "Old Maryland Grill",
+        "query": "Old Maryland Grill UMD",
+        "estimated_meal_price": 15.0,
+        "dietary_tags": ["american", "grilled"],
+        "menu_highlights": ["steaks", "seafood", "salads"],
     },
 ]
 
@@ -1381,27 +1416,65 @@ def _node_build_result(state: DiningState) -> DiningState:
 def _build_seed_fallback_options(budget: float | None, dietary_preferences: list[str]) -> list[dict[str, Any]]:
     requested = {str(item).lower().strip() for item in dietary_preferences if str(item).strip()}
     wants_vegan = "vegan" in requested or "plant-based" in requested or "plant based" in requested
+    wants_vegetarian = "vegetarian" in requested or "veg" in requested
 
     fallback_items: list[dict[str, Any]] = []
+    
     for index, seed in enumerate(FALLBACK_SEED_OPTIONS):
+        seed_tags = [str(tag).lower() for tag in seed.get("dietary_tags", [])]
+        
+        # If user requested vegan, only include vegan options
         if wants_vegan:
-            dietary_tags = [str(tag).lower() for tag in seed.get("dietary_tags", [])]
-            if "vegan" not in dietary_tags and "plant-based" not in dietary_tags:
+            if "vegan" not in seed_tags and "plant-based" not in seed_tags:
+                continue
+        # If user requested vegetarian, only include vegan or vegetarian options
+        elif wants_vegetarian:
+            if "vegan" not in seed_tags and "plant-based" not in seed_tags and "vegetarian" not in seed_tags:
+                continue
+        # If ANY dietary preference requested, try to match it
+        elif requested:
+            matches = any(pref in tag or tag in pref for pref in requested for tag in seed_tags)
+            if not matches:
                 continue
 
         estimated_price = _safe_float(seed.get("estimated_meal_price"), 15.0)
+        
+        # Skip if budget doesn't fit
+        if budget is not None and estimated_price > budget:
+            continue
+            
         fallback_items.append(
             {
                 "name": str(seed.get("name", "Nearby dining option")),
-                "distance_min": 8 + (index * 5),
+                "distance_min": 8 + (index * 4),
                 "budget_ok": (budget is None) or (estimated_price <= budget),
                 "hours_open": True,
                 "dietary_tags": list(seed.get("dietary_tags", [])),
                 "source_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(seed.get('query', seed.get('name', ''))))}",
                 "coordinates": None,
-                "vegan_evidence": True,
+                "vegan_evidence": "vegan" in seed_tags,
             }
         )
+
+    # If filtered results are empty but we have dietary preferences, return some general options
+    if not fallback_items:
+        # Return top 5 general options (non-vegan options from the list)
+        for index, seed in enumerate(FALLBACK_SEED_OPTIONS[:5]):
+            if index >= 5:
+                break
+            estimated_price = _safe_float(seed.get("estimated_meal_price"), 15.0)
+            fallback_items.append(
+                {
+                    "name": str(seed.get("name", "Nearby dining option")),
+                    "distance_min": 8 + (index * 4),
+                    "budget_ok": (budget is None) or (estimated_price <= budget),
+                    "hours_open": True,
+                    "dietary_tags": list(seed.get("dietary_tags", [])),
+                    "source_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(seed.get('query', seed.get('name', ''))))}",
+                    "coordinates": None,
+                    "vegan_evidence": False,
+                }
+            )
 
     return fallback_items[:5]
 
@@ -1708,21 +1781,24 @@ async def run(context: dict) -> dict:
     except Exception:
         pass
 
+    # Always return fallback options instead of empty results
+    dietary_preferences = _extract_dietary_from_message(str(effective_context.get("user_message", "")))
+    budget = effective_context.get("budget")
+    fallback_options = _build_seed_fallback_options(budget, dietary_preferences)
+    
     return {
         "agent": "dining",
-        "options": [],
-        "menu_recommendations": [],
+        "options": fallback_options,
+        "menu_recommendations": _build_seed_menu_recommendations(fallback_options),
         "data_sources": {
             "campus": "none",
             "off_campus": "none",
             "live_web_or_api_only": True,
             "gemini_used": False,
+            "seed_fallback": "umd_college_park_curated",
         },
-        "needs_user_input": True,
-        "follow_up_questions": [
-            "Share your current location (or nearest building) to get walking directions.",
-            "Share your budget and dietary restrictions for more accurate dining recommendations.",
-        ],
-        "warning": "No live dining options were found from configured sources.",
+        "needs_user_input": False,
+        "follow_up_questions": [],
+        "warning": "Showing popular UMD area dining options. Share your location for more specific recommendations.",
         **({"route_preview": _generic_route_preview()} if _generic_route_preview() else {}),
     }
