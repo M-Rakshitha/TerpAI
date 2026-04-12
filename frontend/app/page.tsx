@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import PromptPage from '@/components/ai/PromptPage';
 import AgentsPage from '@/components/ai/AgentsPage';
+import ResultsPage from '@/components/ai/ResultsPage';
 import { useQuery } from '@/hooks/useQuery';
 import { AgentStepResult, QueryTimelineEvent } from '@/lib/types';
 
@@ -303,7 +304,7 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-[#111827]">
       {page === 'prompt' && <PromptPage onSubmit={handlePromptSubmit} />}
-      {page === 'agents' && (
+      {page === 'agents' && !summaryVisible && (
         <AgentsPage
           query={query}
           stages={stages}
@@ -312,6 +313,15 @@ export default function Home() {
           onRevealSummary={handleRevealSummary}
           onReset={handleReset}
           statusLabel={statusLabel}
+        />
+      )}
+      {page === 'agents' && summaryVisible && (
+        <ResultsPage
+          prompt={query}
+          response={data}
+          revealed={summaryVisible}
+          onReveal={handleRevealSummary}
+          onReset={handleReset}
         />
       )}
     </div>

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from backend.agents import aggregator, router, task_planner
+from backend import main as backend_main
 
 
 @pytest.mark.asyncio
@@ -76,6 +78,7 @@ async def test_multi_agent_pipeline_planner_router_aggregator(monkeypatch: pytes
     assert response.presentation is not None
     assert response.presentation.get("layout") == "dashboard"
     assert isinstance(response.presentation.get("sections"), list)
+    assert isinstance(response.presentation.get("visual_report"), dict)
     assert response.agent_execution is not None
     assert response.agent_outputs is not None
 
@@ -193,3 +196,34 @@ async def test_aggregator_includes_agent_activation_status_section() -> None:
     items = activation.get("items", [])
     assert any(item.get("agent") == "dining" and item.get("status") == "error" for item in items)
     assert any(item.get("agent") == "navigator" and item.get("gemini_used") is True for item in items)
+
+
+@pytest.mark.asyncio
+async def test_persist_latest_response_snapshot(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    response = aggregator.aggregate(
+        "Need dinner under $15",
+        ["dining"],
+        {
+            "dining": {
+                "agent": "dining",
+                "options": [
+                    {
+                        "name": "South Campus Dining",
+                        "distance_min": 8,
+                        "budget_ok": True,
+                        "hours_open": True,
+                        "dietary_tags": ["vegan"],
+                    }
+                ],
+            }
+        },
+    )
+
+    snapshot_path = tmp_path / "latest_query_response.json"
+    monkeypatch.setattr(backend_main, "RAW_RESPONSE_PATH", snapshot_path)
+
+    await backend_main._persist_latest_response(response)
+
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert payload["query"] == "Need dinner under $15"
+    assert payload["presentation"]["visual_report"]["headline"]

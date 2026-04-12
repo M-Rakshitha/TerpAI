@@ -1,9 +1,15 @@
 import { QueryResponse, QueryTimelineEvent } from './types';
 
-const DEFAULT_API_BASE_URL = 'http://localhost:8000';
+const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8020';
+const LOCAL_FALLBACK_API_URLS = ['http://127.0.0.1:8020', 'http://localhost:8000'];
 
 function getApiBaseUrl() {
   return (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
+}
+
+function getApiBaseUrlCandidates() {
+  const configured = getApiBaseUrl();
+  return Array.from(new Set([configured, ...LOCAL_FALLBACK_API_URLS]));
 }
 
 function buildWebSocketUrl() {
@@ -24,20 +30,34 @@ async function readErrorResponse(response: Response) {
 }
 
 export async function submitQuery(message: string): Promise<QueryResponse> {
-  const response = await fetch(`${getApiBaseUrl()}/api/query`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ message }),
-  });
+  const candidates = getApiBaseUrlCandidates();
+  const requestBody = JSON.stringify({ message });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const detail = await readErrorResponse(response);
-    throw new Error(detail || `Request failed with status ${response.status}`);
+  for (const baseUrl of candidates) {
+    try {
+      const response = await fetch(`${baseUrl}/api/query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const detail = await readErrorResponse(response);
+        lastError = new Error(detail || `Request failed with status ${response.status}`);
+        continue;
+      }
+
+      return (await response.json()) as QueryResponse;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Network request failed');
+      continue;
+    }
   }
 
-  return (await response.json()) as QueryResponse;
+  throw lastError || new Error('Unable to reach backend API.');
 }
 
 async function submitQueryViaWebSocket(

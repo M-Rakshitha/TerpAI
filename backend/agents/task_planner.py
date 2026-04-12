@@ -330,7 +330,30 @@ def _enforce_navigation_intent(tasks: list[str], user_message: str, enriched_mes
             "walk to",
         ]
     )
-    if navigation_intent and "navigator" not in tasks:
+    dining_intent = any(
+        token in combined_text
+        for token in [
+            "dining",
+            "dinner",
+            "lunch",
+            "breakfast",
+            "restaurant",
+            "cafe",
+            "where to eat",
+            "food",
+            "meal",
+        ]
+    )
+    location_qualified = bool(
+        re.search(
+            r"\b(near|around|at|from|by)\b\s+[a-zA-Z0-9][a-zA-Z0-9 .'-]{1,80}",
+            f"{user_message} {enriched_message}",
+            re.IGNORECASE,
+        )
+    )
+
+    should_add_navigator = navigation_intent or (dining_intent and location_qualified)
+    if should_add_navigator and "navigator" not in tasks:
         tasks = [*tasks, "navigator"]
     return list(dict.fromkeys(tasks))
 
