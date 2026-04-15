@@ -175,10 +175,16 @@ function GoogleRouteMap({
           
           try {
             const result = await new Promise<google.maps.GeocoderResult[]>((resolve, reject) => {
-              geocoder.geocode({ address: dest.name }, (results, status) => {
+              geocoder.geocode(
+                { address: dest.name },
+                (
+                  results: google.maps.GeocoderResult[] | null,
+                  status: google.maps.GeocoderStatus,
+                ) => {
                 if (status === 'OK' && results) resolve(results)
                 else reject(new Error(`Geocoding failed for ${dest.name}`))
-              })
+                },
+              )
             })
             
             if (result.length > 0) {
@@ -398,6 +404,7 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
   const navigator = response?.results?.navigator
   const studyResources = response?.results?.study_resources
   const jobsResearch = response?.results?.jobs_research
+  const needsUserInput = Boolean(response?.user_input_request?.needs_user_input)
 
   // Extract user location from dining route_preview or navigator origin
   const userLocationCoordStr = dining?.route_preview?.origin || navigator?.origin
@@ -673,7 +680,7 @@ export default function ResultsPage({ prompt, response, onReset }: ResultsPagePr
                 ) : (
                   <div className="mt-4 rounded-2xl border border-white/10 bg-[#0f0f0f] p-6 text-center">
                     <p className="text-sm text-gray-400">
-                      {dining.needs_user_input 
+                      {needsUserInput 
                         ? 'Share your location to find nearby dining options' 
                         : 'No dining options found for your criteria'}
                     </p>

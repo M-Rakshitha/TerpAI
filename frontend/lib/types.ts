@@ -137,6 +137,10 @@ export interface ScheduleResult {
 
 export interface DiningResult {
   agent: "dining";
+  route_preview?: {
+    origin?: string;
+    destination?: string;
+  };
   options: {
     name: string;
     distance_min: number;
