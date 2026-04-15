@@ -7,13 +7,8 @@ export interface QuerySubmitContext {
   location_permission_granted?: boolean;
 }
 
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
-const LOCAL_FALLBACK_API_URLS = [
-  'http://127.0.0.1:8000',
-  'http://localhost:8000',
-  'http://127.0.0.1:8020',
-  'http://localhost:8020',
-];
+const DEFAULT_API_BASE_URL = 'https://terpai-4.onrender.com';
+const FALLBACK_API_URLS: string[] = [];
 
 function getApiBaseUrl() {
   return (process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
@@ -21,7 +16,7 @@ function getApiBaseUrl() {
 
 function getApiBaseUrlCandidates() {
   const configured = getApiBaseUrl();
-  return Array.from(new Set([configured, ...LOCAL_FALLBACK_API_URLS]));
+  return Array.from(new Set([configured, ...FALLBACK_API_URLS]));
 }
 
 function buildWebSocketUrl(baseApiUrl: string) {

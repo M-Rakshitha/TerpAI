@@ -63,7 +63,7 @@ frontend/
 
 3. Create a `.env.local` file in the root directory and add your environment variables:
    ```
-   NEXT_PUBLIC_API_URL=http://localhost:8000
+   NEXT_PUBLIC_API_URL=https://terpai-4.onrender.com
    NEXT_PUBLIC_USE_MOCK=true
    AUTH0_SECRET=<your-auth0-secret>
    AUTH0_BASE_URL=http://localhost:3000
